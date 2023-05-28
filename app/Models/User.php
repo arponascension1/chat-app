@@ -45,13 +45,14 @@ class User extends Authenticatable
 
     public function totalChatUnseenCount()
     {
-        $count=0;
-        $conversations = Conversation::where('user1_id', auth()->user()->id)
-            ->orWhere('user2_id', auth()->user()->id)->get();
+        $userId = auth()->user()->id;
 
-            foreach($conversations as $conversation){
-                $count += $conversation->messages()->where('user_id', '!=', auth()->user()->id)->where('seen', false)->count();
-            }
-            return $count;
+        return Message::whereHas('conversation', function ($query) use ($userId) {
+            $query->where('user1_id', $userId)
+                ->orWhere('user2_id', $userId);
+        })
+            ->where('user_id', '!=', $userId)
+            ->where('seen', false)
+            ->count();
     }
 }
