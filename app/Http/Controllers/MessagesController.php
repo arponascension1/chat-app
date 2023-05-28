@@ -24,9 +24,9 @@ class MessagesController extends Controller{
             $query->where('user1_id', $user)->where('user2_id', $loggedInUserId);
         })->first();
 
+        // Handle case where conversation does not exist
         if (!$conversation) {
             $messages = null;
-            // Handle case where conversation does not exist
             return view('chats.messages', compact('userInfo', 'messages'));
         }
         // change message seen status

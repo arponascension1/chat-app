@@ -49,7 +49,7 @@ class Conversation extends Model
         return $this->hasMany(Message::class);
     }
 
-    public function unseenCount()
+    public function unseenCount(): int
     {
         return $this->messages()->where('user_id', '!=', auth()->user()->id)->where('seen', false)->count();
     }
