@@ -42,4 +42,16 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'password' => 'hashed',
     ];
+
+    public function totalChatUnseenCount()
+    {
+        $count=0;
+        $conversations = Conversation::where('user1_id', auth()->user()->id)
+            ->orWhere('user2_id', auth()->user()->id)->get();
+
+            foreach($conversations as $conversation){
+                $count += $conversation->messages()->where('user_id', '!=', auth()->user()->id)->where('seen', false)->count();
+            }
+            return $count;
+    }
 }
