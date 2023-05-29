@@ -5,9 +5,10 @@ use App\Models\User;
 use App\Models\Message;
 use App\Models\Conversation;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class MessagesController extends Controller{
-    public function showMessages($user): \Illuminate\Foundation\Application|\Illuminate\Contracts\View\View|\Illuminate\Contracts\View\Factory|\Illuminate\Routing\Redirector|\Illuminate\Contracts\Foundation\Application|\Illuminate\Http\RedirectResponse
+    public function showMessages($user, Request $request): \Illuminate\Foundation\Application|\Illuminate\Contracts\View\View|\Illuminate\Contracts\View\Factory|\Illuminate\Routing\Redirector|\Illuminate\Contracts\Foundation\Application|\Illuminate\Http\RedirectResponse
     {
         $loggedInUserId = auth()->user()->id;
         if( $user == $loggedInUserId){
@@ -29,17 +30,27 @@ class MessagesController extends Controller{
             $messages = null;
             return view('chats.messages', compact('userInfo', 'messages'));
         }
-        // change message seen status
-        $conversation
-            ->messages()
-            ->where('user_id', '!=', $loggedInUserId)
-            ->where('seen', false)
-            ->update(['seen' => true]);
-        // Load the messages for the conversation
-        $messages = $conversation->messages()->orderBy('created_at')->get();
 
 
-        return view('chats.messages', compact('userInfo', 'messages'));
+        $messagesReversed = $conversation->messages()
+            ->orderBy('created_at', 'desc') // Retrieve messages in descending order of their creation time
+            ->simplePaginate(5);
+
+        $messages = $messagesReversed->sortBy('created_at');
+
+// Calculate the total number of messages
+        $totalMessages = $conversation->messages()->count();
+
+// Create a new LengthAwarePaginator instance with the reversed messages
+        $paginator = new LengthAwarePaginator(
+            $messages,
+            $totalMessages,
+            $messagesReversed->perPage(),
+            $messagesReversed->currentPage(),
+            ['path' => ''] // Replace empty string with the appropriate URL path
+        );
+
+        return view('chats.messages', compact('userInfo', 'messages', 'paginator'));
     }
     public function sentMessage(Request $request, $user): \Illuminate\Foundation\Application|\Illuminate\Routing\Redirector|\Illuminate\Http\RedirectResponse|\Illuminate\Contracts\Foundation\Application
     {
@@ -76,8 +87,6 @@ class MessagesController extends Controller{
 
         $conversation->messages()->save($message);
 
-        return redirect()->back();
-
-
+        return redirect("/chat/$user");
     }
 }
