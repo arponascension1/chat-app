@@ -10,7 +10,7 @@
                     <p>no message</p>
                 @else
                     @if($paginator->nextPageUrl())
-                        <a href="{{$paginator->nextPageUrl()}}">Previous Messages</a>
+                        <a href="{{$paginator->nextPageUrl()}}">See Older Messages</a>
                     @endif
 
                     @foreach ($messages as $message)
@@ -19,7 +19,7 @@
                         <hr>
                     @endforeach
                         @if($paginator->previousPageUrl())
-                            <a href="{{$paginator->previousPageUrl()}}">Next Messages</a>
+                            <a href="{{$paginator->previousPageUrl()}}">See newer messages</a>
                         @endif
                 @endif
                 <form method="POST" action="/chat/{{$userInfo->id}}">

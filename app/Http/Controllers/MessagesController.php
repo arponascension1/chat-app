@@ -30,8 +30,7 @@ class MessagesController extends Controller{
             $messages = null;
             return view('chats.messages', compact('userInfo', 'messages'));
         }
-
-
+        $conversation->messages()->where('user_id', '!=', auth()->user()->id)->where('seen', false)->update(['seen' => true]);
         $messagesReversed = $conversation->messages()
             ->orderBy('created_at', 'desc') // Retrieve messages in descending order of their creation time
             ->simplePaginate(5);
