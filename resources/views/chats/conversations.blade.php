@@ -24,7 +24,7 @@
                             @endif
                             {{ \Illuminate\Support\Str::limit($conversation->messages->last()->content, 20, $end='...') }}
 
-                            {{ $conversation->updated_at->diffForHumans() }}
+                            {{ $conversation->updated_at->format('F j, Y, g:i a') }}
                     </div>
                     <hr>
                 @endforeach

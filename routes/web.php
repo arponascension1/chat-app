@@ -25,6 +25,7 @@ Route::get('/home', [App\Http\Controllers\HomeController::class, 'index'])->name
 
 Route::group(['middleware' => 'auth'], function (){
     Route::get('/conversations', [ConversationsController::class, 'getIndex']);
+    Route::delete('/conversations/{user}', [ConversationsController::class, 'delete']);
     Route::get('/chat/{user}', [MessagesController::class, 'showMessages']);
     Route::post('/chat/{user}', [MessagesController::class, 'sentMessage']);
 });

@@ -16,4 +16,17 @@ class ConversationsController extends Controller{
 
         return view('chats.conversations', compact('conversations'));
     }
+    public function delete($user){
+        $loggedInUserId = Auth::user()->id;
+        $conversation = Conversation::where(function ($query) use ($loggedInUserId, $user) {
+            $query->where('user1_id', $loggedInUserId)->where('user2_id', $user);
+        })->orWhere(function ($query) use ($loggedInUserId, $user) {
+            $query->where('user1_id', $user)->where('user2_id', $loggedInUserId);
+        })->first();
+        if ($conversation) {
+            $conversation->messages()->delete();
+            $conversation->delete();
+        }
+        return redirect('/conversations');
+    }
 }
