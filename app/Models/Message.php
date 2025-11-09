@@ -30,6 +30,16 @@ class Message extends Model
         'unsent_at' => 'datetime',
     ];
 
+    protected $appends = ['is_read'];
+
+    /**
+     * Get the is_read attribute (alias for seen)
+     */
+    public function getIsReadAttribute(): bool
+    {
+        return $this->seen;
+    }
+
     /**
      * Get the conversation this message belongs to
      */
