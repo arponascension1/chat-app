@@ -91,7 +91,6 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                         notificationAudioRef.current!.pause();
                         notificationAudioRef.current!.currentTime = 0;
                         audioUnlockedRef.current = true;
-                        console.log('Audio unlocked');
                     })
                     .catch(() => {
                         // Ignore errors during unlock
@@ -116,23 +115,18 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const playNotificationSound = useCallback(() => {
         try {
             if (!audioUnlockedRef.current) {
-                console.log('Audio not yet unlocked - waiting for user interaction');
                 return;
             }
 
             // Use the preloaded audio instance
             if (notificationAudioRef.current) {
                 notificationAudioRef.current.currentTime = 0;
-                notificationAudioRef.current.play()
-                    .then(() => {
-                        console.log('Notification sound played successfully');
-                    })
-                    .catch(error => {
-                        console.error('Error playing notification sound:', error);
-                    });
+                notificationAudioRef.current.play().catch(() => {
+                    // Silently ignore errors
+                });
             }
         } catch (error) {
-            console.error('Failed to play audio:', error);
+            // Silently ignore errors
         }
     }, []);
 
@@ -570,7 +564,6 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
 
         channel.listen('.message.sent', (event: any) => {
             // Play notification sound for ALL received messages
-            console.log('Message received event fired. Has conversation:', !!selectedConversation, 'Audio unlocked:', audioUnlockedRef.current);
             playNotificationSound();
 
             // If the message is for current conversation, add it
