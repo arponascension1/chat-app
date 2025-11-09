@@ -1,3 +1,12 @@
+// Declare custom window property for scroll restoration
+declare global {
+    interface Window {
+        __chatapp_scroll_restore?: {
+            previousScrollTop: number;
+            previousScrollHeight: number;
+        } | null;
+    }
+}
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Head, router, Link } from '@inertiajs/react';
 import axios from 'axios';
@@ -73,6 +82,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const [showScrollButton, setShowScrollButton] = useState(false);
     const hasScrolledInitially = useRef(false);
     const isSwitchingConversation = useRef(false);
+    const isLoadingMoreMessages = useRef(false);
     const [messageMenuOpen, setMessageMenuOpen] = useState<number | null>(null);
     const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
     const audioUnlockedRef = useRef<boolean>(false);
@@ -193,33 +203,31 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         if (!selectedConversation || isLoadingMore || !hasMoreMessages) return;
 
         setIsLoadingMore(true);
+        isLoadingMoreMessages.current = true;
         const oldestMessageId = messages.length > 0 ? messages[0].id : null;
-        
+        // Store scroll position before fetching
+        const container = messagesContainerRef.current;
+        const previousScrollHeight = container?.scrollHeight || 0;
+        const previousScrollTop = container?.scrollTop || 0;
         try {
             const response = await axios.get(`/conversations/${selectedConversation.id}/load-more`, {
                 params: { before_id: oldestMessageId }
             });
-
             if (response.data.messages.length > 0) {
-                // Store current scroll position and height
-                const container = messagesContainerRef.current;
-                const previousScrollHeight = container?.scrollHeight || 0;
-                const previousScrollTop = container?.scrollTop || 0;
-
                 // Add older messages to the beginning
                 setMessages(prevMessages => [...response.data.messages, ...prevMessages]);
                 setHasMoreMessages(response.data.has_more);
-
-                // Restore scroll position after new messages are rendered
-                setTimeout(() => {
-                    if (container) {
-                        const newScrollHeight = container.scrollHeight;
-                        container.scrollTop = previousScrollTop + (newScrollHeight - previousScrollHeight);
-                    }
-                }, 0);
+                // Save scroll restoration info for useEffect
+                window.__chatapp_scroll_restore = {
+                    previousScrollTop,
+                    previousScrollHeight
+                };
+            } else {
+                isLoadingMoreMessages.current = false;
             }
         } catch (error) {
             console.error('Error loading more messages:', error);
+            isLoadingMoreMessages.current = false;
         } finally {
             setIsLoadingMore(false);
         }
@@ -487,30 +495,39 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     useEffect(() => {
         if (messages.length > 0 && messagesContainerRef.current) {
             const container = messagesContainerRef.current;
-            
             if (!hasScrolledInitially.current) {
                 // Initial load - multiple attempts to ensure we scroll after images load
                 hasScrolledInitially.current = true;
-                
                 container.scrollTop = container.scrollHeight;
-                
                 setTimeout(() => {
                     container.scrollTop = container.scrollHeight;
                 }, 50);
-                
                 setTimeout(() => {
                     container.scrollTop = container.scrollHeight;
                 }, 200);
-                
                 setTimeout(() => {
                     container.scrollTop = container.scrollHeight;
                 }, 500);
-            } else if (!isSwitchingConversation.current) {
-                // After initial load - scroll on new messages (but not when switching conversations)
+            } else if (!isSwitchingConversation.current && !isLoadingMoreMessages.current) {
+                // After initial load - scroll on new messages (but not when switching conversations or loading more)
                 setTimeout(() => {
                     container.scrollTop = container.scrollHeight;
                 }, 100);
             }
+        }
+    }, [messages.length]);
+
+    // Restore scroll position after loading more messages (pagination)
+    useEffect(() => {
+        if (isLoadingMoreMessages.current && window.__chatapp_scroll_restore && messagesContainerRef.current) {
+            const { previousScrollTop, previousScrollHeight } = window.__chatapp_scroll_restore;
+            const container = messagesContainerRef.current;
+            setTimeout(() => {
+                const newScrollHeight = container.scrollHeight;
+                container.scrollTop = previousScrollTop + (newScrollHeight - previousScrollHeight);
+                isLoadingMoreMessages.current = false;
+                window.__chatapp_scroll_restore = null;
+            }, 0);
         }
     }, [messages.length]);
 
