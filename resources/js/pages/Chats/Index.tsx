@@ -74,6 +74,67 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const hasScrolledInitially = useRef(false);
     const isSwitchingConversation = useRef(false);
     const [messageMenuOpen, setMessageMenuOpen] = useState<number | null>(null);
+    const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
+    const audioUnlockedRef = useRef<boolean>(false);
+
+    // Initialize notification sound and unlock audio on first user interaction
+    useEffect(() => {
+        notificationAudioRef.current = new Audio('/notification.mp3');
+        notificationAudioRef.current.volume = 0.5;
+        
+        // Unlock audio on first user interaction
+        const unlockAudio = () => {
+            if (!audioUnlockedRef.current && notificationAudioRef.current) {
+                // Play and immediately pause to unlock audio context
+                notificationAudioRef.current.play()
+                    .then(() => {
+                        notificationAudioRef.current!.pause();
+                        notificationAudioRef.current!.currentTime = 0;
+                        audioUnlockedRef.current = true;
+                        console.log('Audio unlocked');
+                    })
+                    .catch(() => {
+                        // Ignore errors during unlock
+                    });
+            }
+        };
+
+        // Listen for any user interaction to unlock audio
+        const events = ['click', 'touchstart', 'keydown'];
+        events.forEach(event => {
+            document.addEventListener(event, unlockAudio, { once: true });
+        });
+
+        return () => {
+            events.forEach(event => {
+                document.removeEventListener(event, unlockAudio);
+            });
+        };
+    }, []);
+
+    // Function to play notification sound - wrapped in useCallback to prevent recreating
+    const playNotificationSound = useCallback(() => {
+        try {
+            if (!audioUnlockedRef.current) {
+                console.log('Audio not yet unlocked - waiting for user interaction');
+                return;
+            }
+
+            // Use the preloaded audio instance
+            if (notificationAudioRef.current) {
+                notificationAudioRef.current.currentTime = 0;
+                notificationAudioRef.current.play()
+                    .then(() => {
+                        console.log('Notification sound played successfully');
+                    })
+                    .catch(error => {
+                        console.error('Error playing notification sound:', error);
+                    });
+            }
+        } catch (error) {
+            console.error('Failed to play audio:', error);
+        }
+    }, []);
 
     // Scroll to bottom of messages
     const scrollToBottom = () => {
@@ -508,6 +569,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         const channel = Echo.private(`user.${auth.user.id}`);
 
         channel.listen('.message.sent', (event: any) => {
+            // Play notification sound for ALL received messages
+            console.log('Message received event fired. Has conversation:', !!selectedConversation, 'Audio unlocked:', audioUnlockedRef.current);
+            playNotificationSound();
+
             // If the message is for current conversation, add it
             if (selectedConversation && event.conversation_id === selectedConversation.id) {
                 const newMessage: Message = {
@@ -647,7 +712,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             channel.stopListening('.message.deleted');
             channel.stopListening('.conversation.deleted');
         };
-    }, [auth.user, selectedConversation, newChatReceiver, loadConversations]);
+    }, [auth.user, selectedConversation, newChatReceiver, loadConversations, playNotificationSound]);
 
 
 
