@@ -146,7 +146,15 @@ class MessageController extends Controller
                         'is_read' => $newLastMessage->seen,
                     ];
                 }
-                
+
+                // If we have a new last message, update the conversation's updated_at
+                // to reflect the timestamp of that message so conversation ordering
+                // will follow the previous message's time.
+                if ($newLastMessage) {
+                    $conversation->updated_at = $newLastMessage->created_at;
+                    $conversation->save();
+                }
+
                 // Broadcast the deletion event with the new last message (or null if no messages left)
                 broadcast(new \App\Events\MessageDeleted(
                     $message->id,

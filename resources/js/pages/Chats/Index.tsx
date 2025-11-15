@@ -8,7 +8,7 @@ declare global {
     }
 }
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Head, router, Link } from '@inertiajs/react';
+import { Head, router } from '@inertiajs/react';
 import axios from 'axios';
 import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
 
@@ -91,7 +91,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     useEffect(() => {
         notificationAudioRef.current = new Audio('/notification.mp3');
         notificationAudioRef.current.volume = 0.5;
-        
+
         // Unlock audio on first user interaction
         const unlockAudio = () => {
             if (!audioUnlockedRef.current && notificationAudioRef.current) {
@@ -135,6 +135,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                     // Silently ignore errors
                 });
             }
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
             // Silently ignore errors
         }
@@ -161,29 +162,29 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const loadMessages = useCallback(async (conversationId: number) => {
         setIsLoadingMessages(true);
         isSwitchingConversation.current = true;
-        
+
         try {
             const response = await axios.get(`/conversations/${conversationId}`);
             setMessages(response.data.messages);
             setHasMoreMessages(response.data.has_more || false);
             setSelectedConversation(conversations.find(c => c.id === conversationId) || null);
             setIsLoadingMessages(false);
-            
+
             // Multiple instant scroll attempts to ensure we reach bottom after content loads
             const scrollToEnd = () => {
                 if (messagesContainerRef.current) {
                     messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
                 }
             };
-            
+
             // Immediate scroll
             scrollToEnd();
-            
+
             // Multiple delayed scrolls to catch late-loading content
             setTimeout(scrollToEnd, 0);
             setTimeout(scrollToEnd, 50);
             setTimeout(scrollToEnd, 150);
-            
+
             // Reset flag after all scrolls
             setTimeout(() => {
                 isSwitchingConversation.current = false;
@@ -237,12 +238,12 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const handleScroll = useCallback(() => {
         const container = messagesContainerRef.current;
         if (!container) return;
-        
+
         // Load more messages when scrolled to top
         if (container.scrollTop === 0 && hasMoreMessages && !isLoadingMore) {
             loadMoreMessages();
         }
-        
+
         // Show scroll button when not at bottom
         const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
         setShowScrollButton(!isAtBottom);
@@ -304,7 +305,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         const file = e.target.files?.[0];
         if (file) {
             setSelectedFile(file);
-            
+
             // Create preview for images and videos
             const reader = new FileReader();
             reader.onload = (e) => {
@@ -338,8 +339,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const handleUnsend = async (messageId: number) => {
         try {
             await axios.delete(`/messages/${messageId}/unsend`);
-            setMessages(prev => prev.map(msg => 
-                msg.id === messageId 
+            setMessages(prev => prev.map(msg =>
+                msg.id === messageId
                     ? { ...msg, content: null, attachment_path: null, attachment_type: null, attachment_url: null, unsent: true }
                     : msg
             ));
@@ -352,12 +353,15 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     // Delete conversation
     const handleDeleteConversation = async () => {
         if (!selectedConversation) return;
-        
+
         if (confirm('Delete this conversation? Messages will only be deleted for you.')) {
             try {
                 await axios.delete(`/conversations/${selectedConversation.id}/delete`);
                 // The conversation will be removed via WebSocket event listener
-                // No need to manually update state here
+                // Redirect to root so the user is not left on a deleted conversation
+                setSelectedConversation(null);
+                setMessages([]);
+                router.get('/');
             } catch (error) {
                 console.error('Error deleting conversation:', error);
             }
@@ -383,7 +387,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             const formData = new FormData();
             formData.append('receiver_id', receiverId.toString());
             formData.append('content', message.trim());
-            
+
             if (selectedFile) {
                 formData.append('attachment', selectedFile);
             }
@@ -441,7 +445,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         try {
             // Get user details - check allUsers first, otherwise fetch
             let user = allUsers.find(u => u.id === userId);
-            
+
             if (!user) {
                 // Fetch all users if not loaded yet
                 const response = await axios.get('/users');
@@ -461,7 +465,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             setShowUserList(false);
             setSearchQuery(''); // Clear search
             setReceiverIdFromUrl(userId);
-            
+
             // Update URL
             window.history.pushState({}, '', `/${userId}`);
         } catch (error) {
@@ -538,7 +542,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             loadConversations();
         }
         loadUsers();
-        
+
         // Messages are already marked as seen in the backend when loading conversation
         // No need to mark them again here
     }, [initialConversations.length, loadConversations]);
@@ -549,13 +553,13 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         if (initialMessages && initialMessages.length > 0) {
             return;
         }
-        
+
         if (receiverIdFromUrl && !isLoading) {
             // Find conversation with this receiver
             const conversation = conversations.find(
                 conv => conv.other_user.id === receiverIdFromUrl
             );
-            
+
             if (conversation) {
                 loadMessages(conversation.id);
             } else {
@@ -635,8 +639,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         // Listen for message seen events
         channel.listen('.message.seen', (event: any) => {
             // Update the message in the current conversation
-            setMessages(prev => prev.map(msg => 
-                msg.id === event.message_id 
+            setMessages(prev => prev.map(msg =>
+                msg.id === event.message_id
                     ? { ...msg, is_read: true }
                     : msg
             ));
@@ -645,8 +649,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             setConversations(prevConversations => {
                 return prevConversations.map(conv => {
                     // Check if this conversation's last message matches the seen message
-                    if (conv.last_message && 
-                        conv.id === event.conversation_id && 
+                    if (conv.last_message &&
+                        conv.id === event.conversation_id &&
                         conv.last_message.id === event.message_id) {
                         return {
                             ...conv,
@@ -665,8 +669,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         // Listen for message unsent events
         channel.listen('.message.unsent', (event: any) => {
             // Update the message to show as unsent
-            setMessages(prev => prev.map(msg => 
-                msg.id === event.message_id 
+            setMessages(prev => prev.map(msg =>
+                msg.id === event.message_id
                     ? { ...msg, content: null, attachment_path: null, attachment_type: null, attachment_url: null, unsent: true }
                     : msg
             ));
@@ -678,6 +682,9 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         // Listen for message deleted events (updates conversation last message in real-time)
         channel.listen('.message.deleted', (event: any) => {
             setConversations(prevConversations => {
+                // Copy array so we can mutate/sort locally
+                let updated = [...prevConversations];
+
                 // If new_last_message is null, remove the conversation (all messages deleted)
                 if (event.new_last_message === null) {
                     // If the deleted conversation was selected, clear the selection
@@ -685,20 +692,33 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                         setSelectedConversation(null);
                         setMessages([]);
                     }
-                    return prevConversations.filter(conv => conv.id !== event.conversation_id);
+                    updated = updated.filter(conv => conv.id !== event.conversation_id);
+
+                    // No further sorting needed
+                    return updated;
                 }
-                
-                // Otherwise, update the last message
-                return prevConversations.map(conv => {
+
+                // Otherwise, update the last message for the matching conversation
+                updated = updated.map(conv => {
                     if (conv.id === event.conversation_id) {
                         return {
                             ...conv,
                             last_message: event.new_last_message,
-                            updated_at: new Date().toISOString(),
+                            // keep/override updated_at so other parts that read it won't break
+                            updated_at: event.new_last_message?.created_at ?? new Date().toISOString(),
                         };
                     }
                     return conv;
                 });
+
+                // Re-sort conversations so the list is ordered by the last message timestamp (newest first).
+                updated.sort((a, b) => {
+                    const aTime = a.last_message ? new Date(a.last_message.created_at).getTime() : 0;
+                    const bTime = b.last_message ? new Date(b.last_message.created_at).getTime() : 0;
+                    return bTime - aTime;
+                });
+
+                return updated;
             });
         });
 
@@ -707,11 +727,13 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             setConversations(prevConversations => {
                 return prevConversations.filter(conv => conv.id !== event.conversation_id);
             });
-            
+
             // If the deleted conversation was selected, clear the selection
             if (selectedConversation?.id === event.conversation_id) {
                 setSelectedConversation(null);
                 setMessages([]);
+                // Redirect to root so URL and UI reflect that conversation is closed
+                router.get('/');
             }
         });
 
@@ -820,13 +842,13 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                             <>
                                 {(() => {
                                     // Use search results if searching, otherwise show all conversations
-                                    const filteredConversations = searchQuery 
-                                        ? searchResults.conversations 
+                                    const filteredConversations = searchQuery
+                                        ? searchResults.conversations
                                         : conversations;
 
                                     // Use search results for users if searching
-                                    const filteredUsers = searchQuery 
-                                        ? searchResults.users 
+                                    const filteredUsers = searchQuery
+                                        ? searchResults.users
                                         : [];
 
                                     if (filteredConversations.length === 0 && filteredUsers.length === 0 && searchQuery) {
@@ -850,14 +872,14 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         onClick={() => {
                                             // Update URL without full page reload
                                             window.history.pushState({}, '', `/${conv.other_user.id}`);
-                                            
+
                                             // Immediately update unread count to 0 in local state
-                                            setConversations(prevConvs => 
-                                                prevConvs.map(c => 
+                                            setConversations(prevConvs =>
+                                                prevConvs.map(c =>
                                                     c.id === conv.id ? { ...c, unread_count: 0 } : c
                                                 )
                                             );
-                                            
+
                                             loadMessages(conv.id);
                                         }}
                                         className={`flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer border-l-4 ${
@@ -908,7 +930,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         </div>
                                     </div>
                                     ))}
-                                    
+
                                     {/* Users not in conversations */}
                                     {searchQuery && filteredUsers.length > 0 && (
                                         <div className="px-4 py-2 bg-[#F0F2F5] font-semibold text-xs text-gray-600">
@@ -995,7 +1017,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[#00A884]"></div>
                                     </div>
                                 )}
-                                
+
                                 {messages.map((msg) => (
                                     <div
                                         key={msg.id}
@@ -1052,9 +1074,9 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                 <>
                                                     {/* Attachment */}
                                                     {msg.attachment_url && msg.attachment_type === 'image' && (
-                                                        <img 
-                                                            src={msg.attachment_url} 
-                                                            alt="Attachment" 
+                                                        <img
+                                                            src={msg.attachment_url}
+                                                            alt="Attachment"
                                                             className="rounded-lg mb-2 max-w-full cursor-pointer hover:opacity-90"
                                                             onClick={() => window.open(msg.attachment_url!, '_blank')}
                                                             onLoad={() => {
@@ -1066,8 +1088,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                         />
                                                     )}
                                                     {msg.attachment_url && msg.attachment_type === 'video' && (
-                                                        <video 
-                                                            src={msg.attachment_url} 
+                                                        <video
+                                                            src={msg.attachment_url}
                                                             controls
                                                             className="rounded-lg mb-2 max-w-full"
                                                             onLoadedMetadata={() => {
@@ -1078,7 +1100,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                             }}
                                                         />
                                                     )}
-                                                    
+
                                                     {msg.content && <p className="text-sm text-gray-900 break-words">{msg.content}</p>}
                                                 </>
                                             )}
@@ -1102,7 +1124,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                     </div>
                                 ))}
                                 <div ref={messagesEndRef} />
-                                
+
                                 {/* Scroll to Bottom Button */}
                                 {showScrollButton && (
                                     <button
@@ -1125,7 +1147,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         <EmojiPicker onEmojiClick={handleEmojiClick} />
                                     </div>
                                 )}
-                                
+
                                 {/* File Preview */}
                                 {filePreview && (
                                     <div className="mb-2 relative inline-block">
@@ -1146,9 +1168,9 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         </div>
                                     </div>
                                 )}
-                                
+
                                 <div className="flex items-end space-x-2">
-                                    <button 
+                                    <button
                                         onClick={() => setShowEmojiPicker(!showEmojiPicker)}
                                         className="p-2 hover:bg-gray-200 rounded-full transition mb-1"
                                     >
@@ -1156,7 +1178,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                             <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z" />
                                         </svg>
                                     </button>
-                                    
+
                                     <input
                                         ref={fileInputRef}
                                         type="file"
@@ -1164,7 +1186,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         onChange={handleFileSelect}
                                         className="hidden"
                                     />
-                                    <button 
+                                    <button
                                         onClick={() => fileInputRef.current?.click()}
                                         className="p-2 hover:bg-gray-200 rounded-full transition mb-1"
                                     >
@@ -1172,7 +1194,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                                         </svg>
                                     </button>
-                                    
+
                                     <div className="flex-1 bg-white rounded-lg">
                                     <textarea
                                         value={message}

@@ -66,7 +66,10 @@ class Conversation extends Model
     public function getLastMessageFor(int $userId): ?Message
     {
         return $this->messages()
-            ->whereRaw('NOT JSON_CONTAINS(COALESCE(deleted_by, "[]"), ?)', [json_encode($userId)])
+            ->where(function ($query) use ($userId) {
+                $query->whereJsonDoesntContain('deleted_by', $userId)
+                    ->orWhereNull('deleted_by');
+            })
             ->latest()
             ->first();
     }
