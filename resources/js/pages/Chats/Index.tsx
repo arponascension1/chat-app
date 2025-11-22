@@ -224,24 +224,18 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
 
     // Debug helper to POST message seen with tracing — keeps a single place to observe when /messages/{id}/seen is called
     const debugPostSeen = async (id: number, origin = 'unknown') => {
-        try {
-            console.debug('[debug] postSeen', { id, origin, isSwitching: isSwitchingConversation.current, scrollTop: messagesContainerRef.current?.scrollTop, scrollHeight: messagesContainerRef.current?.scrollHeight, clientHeight: messagesContainerRef.current?.clientHeight });
-        } catch (e) {
-            // ignore logging errors
-        }
+        // (debug logging removed)
 
         try {
             await axios.post(`/messages/${id}/seen`);
         } catch (e) {
-            console.error('[debug] postSeen error', e);
+            console.error('postSeen error', e);
         }
     };
 
     // Debug wrapper for incrementing the new-message popup counter so we can see when it changes
     const incNewMessageCount = (n: number, origin = 'unknown') => {
-        try {
-            console.debug('[debug] incNewMessageCount', { n, origin, isSwitching: isSwitchingConversation.current, pending: pendingSeenIdsRef.current.length });
-        } catch (e) {}
+        // debug logging removed
         setNewMessageCount(c => c + n);
     };
 
@@ -564,13 +558,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             // If message has attachment and user was at bottom, mark pending so we scroll after media loads
             if (newMessage.attachment_url && wasAtBottomRef.current) {
                 pendingScrollIdsRef.current.push(newMessage.id);
-                try {
-                    console.debug('[debug] sent message pendingScroll push', { id: newMessage.id, wasAtBottom: wasAtBottomRef.current, pending: pendingScrollIdsRef.current.slice() });
-                } catch (e) {}
 
                 // Fallback: schedule an extra scroll after a short delay in case media load events or RAF miss it
                 setTimeout(() => {
-                    try { console.debug('[debug] sent message fallback scroll', { id: newMessage.id, pending: pendingScrollIdsRef.current.slice(), scrollHeight: messagesContainerRef.current?.scrollHeight }); } catch (e) {}
+                    // fallback scroll in case media load events are missed
                     scheduleScrollToBottom(false);
                 }, 250);
             }
@@ -1425,7 +1416,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                             onLoad={() => {
                                                                 const container = messagesContainerRef.current;
                                                                 const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
-                                                                try { console.debug('[debug] image onLoad', { id: msg.id, pending: pendingScrollIdsRef.current.slice(), isAtBottom, scrollHeight: container?.scrollHeight }); } catch (e) {}
+                                                                // debug logging removed
                                                                 // If this message was marked as pending for scroll, trigger scroll now.
                                                                 if (pendingScrollIdsRef.current.includes(msg.id)) {
                                                                     // remove id
@@ -1450,7 +1441,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                                 onLoadedMetadata={() => {
                                                                     const container = messagesContainerRef.current;
                                                                     const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
-                                                                    try { console.debug('[debug] video onLoadedMetadata', { id: msg.id, pending: pendingScrollIdsRef.current.slice(), isAtBottom, scrollHeight: container?.scrollHeight }); } catch (e) {}
+                                                                    // debug logging removed
                                                                     if (pendingScrollIdsRef.current.includes(msg.id)) {
                                                                         pendingScrollIdsRef.current = pendingScrollIdsRef.current.filter(id => id !== msg.id);
                                                                         scheduleScrollToBottom();
