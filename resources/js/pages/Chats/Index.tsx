@@ -808,7 +808,9 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             );
 
             if (conversation) {
-                loadMessages(conversation.id);
+                // User navigated directly to a conversation via URL — treat this as an explicit open
+                // so unseen messages should be marked as seen immediately.
+                loadMessages(conversation.id, true);
             } else {
                 // No conversation exists, prepare new chat window
                 prepareNewChat(receiverIdFromUrl);
@@ -816,6 +818,29 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             setReceiverIdFromUrl(undefined);
         }
     }, [receiverIdFromUrl, conversations, isLoading]);
+
+    // If the page was server-rendered with `initialMessages` (SSR) and the user
+    // navigated directly to a conversation URL (receiverIdFromUrl is set), we may
+    // not have run the normal client-side `loadMessages` flow. In that SSR case
+    // mark any unseen messages as seen immediately so the UI/state matches.
+    useEffect(() => {
+        if (initialMessages && initialMessages.length > 0 && receiverIdFromUrl) {
+            const unseenIds = (initialMessages || []).filter((m: any) => !m.is_mine && !m.is_read).map((m: any) => m.id);
+            if (unseenIds.length > 0) {
+                (async () => {
+                    try {
+                        await Promise.all(unseenIds.map((id: number) => debugPostSeen(id, 'ssr_direct_open')));
+                    } catch (e) {
+                        // ignore
+                    }
+                    try { loadConversations(); } catch (e) { /* ignore */ }
+                })();
+            }
+
+            // Clear the receiverIdFromUrl so we don't re-run this repeatedly
+            setReceiverIdFromUrl(undefined);
+        }
+    }, [initialMessages, receiverIdFromUrl, loadConversations]);
 
     // Listen for new messages via WebSocket
     useEffect(() => {
@@ -1563,7 +1588,22 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                             </div>
                         </>
                     ) : (
-                        <div className="flex-1 flex items-center justify-center">
+                        <>
+                            {/* Mobile header for when no conversation is selected */}
+                            <div className="md:hidden bg-[#F0F2F5] px-3 py-2 border-b border-gray-200 flex items-center">
+                                <button
+                                    onClick={() => setIsSidebarOpen(true)}
+                                    className="p-2 hover:bg-gray-200 rounded-full transition mr-2"
+                                    title="Open Menu"
+                                >
+                                    <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                    </svg>
+                                </button>
+                                <h3 className="font-semibold text-gray-900">Chats</h3>
+                            </div>
+
+                            <div className="flex-1 flex items-center justify-center">
                             <div className="text-center">
                                 <div className="w-32 h-32 bg-[#F0F2F5] rounded-full flex items-center justify-center mx-auto mb-4">
                                     <svg className="w-16 h-16 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
@@ -1575,6 +1615,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                 <p className="text-gray-500 mt-1">or click + to start a new chat</p>
                             </div>
                         </div>
+                        </>
                     )}
                 </div>
             </div>
