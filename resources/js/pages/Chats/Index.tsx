@@ -109,6 +109,22 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const [newMessageCount, setNewMessageCount] = useState(0);
     const [showNewMessagePopup, setShowNewMessagePopup] = useState(false);
     const pendingSeenIdsRef = useRef<number[]>([]);
+    // Lightbox for viewing attachments
+    const [lightboxOpen, setLightboxOpen] = useState(false);
+    const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+    const [lightboxType, setLightboxType] = useState<'image'|'video' | null>(null);
+    const openLightbox = (src: string, type: 'image'|'video') => {
+        setLightboxSrc(src);
+        setLightboxType(type);
+        setLightboxOpen(true);
+        try { document.body.style.overflow = 'hidden'; } catch (e) {}
+    };
+    const closeLightbox = () => {
+        setLightboxOpen(false);
+        setLightboxSrc(null);
+        setLightboxType(null);
+        try { document.body.style.overflow = ''; } catch (e) {}
+    };
     const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
     const audioUnlockedRef = useRef<boolean>(false);
 
@@ -145,6 +161,15 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             });
         };
     }, []);
+
+    // Close lightbox on ESC
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && lightboxOpen) closeLightbox();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [lightboxOpen]);
 
     // Function to play notification sound - wrapped in useCallback to prevent recreating
     const playNotificationSound = useCallback(() => {
@@ -1342,8 +1367,9 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                         <img
                                                             src={msg.attachment_url}
                                                             alt="Attachment"
-                                                            className="rounded-lg mb-2 w-64 h-40 md:w-80 md:h-48 lg:w-96 lg:h-56 object-cover cursor-pointer hover:opacity-90"
-                                                            onClick={() => window.open(msg.attachment_url!, '_blank')}
+                                                            // Fixed, consistent thumbnail sizes across breakpoints
+                                                            className="rounded-lg mb-2 w-48 h-32 md:w-64 md:h-40 lg:w-80 lg:h-48 object-cover cursor-pointer hover:opacity-90"
+                                                            onClick={() => openLightbox(msg.attachment_url!, 'image')}
                                                             onLoad={() => {
                                                                 const container = messagesContainerRef.current;
                                                                 const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
@@ -1362,24 +1388,28 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                         />
                                                     )}
                                                     {msg.attachment_url && msg.attachment_type === 'video' && (
-                                                        <video
-                                                            src={msg.attachment_url}
-                                                            controls
-                                                            className="rounded-lg mb-2 w-64 h-40 md:w-80 md:h-48 lg:w-96 lg:h-56 object-cover"
-                                                            onLoadedMetadata={() => {
-                                                                const container = messagesContainerRef.current;
-                                                                const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
-                                                                try { console.debug('[debug] video onLoadedMetadata', { id: msg.id, pending: pendingScrollIdsRef.current.slice(), isAtBottom, scrollHeight: container?.scrollHeight }); } catch (e) {}
-                                                                if (pendingScrollIdsRef.current.includes(msg.id)) {
-                                                                    pendingScrollIdsRef.current = pendingScrollIdsRef.current.filter(id => id !== msg.id);
-                                                                    scheduleScrollToBottom();
-                                                                    return;
-                                                                }
-                                                                if (hasScrolledInitially.current && isAtBottom && container) {
-                                                                    scheduleScrollToBottom();
-                                                                }
-                                                            }}
-                                                        />
+                                                        <div className="relative">
+                                                            <video
+                                                                src={msg.attachment_url}
+                                                                controls
+                                                                // Fixed, consistent thumbnail sizes across breakpoints
+                                                                className="rounded-lg mb-2 w-48 h-32 md:w-64 md:h-40 lg:w-80 lg:h-48 object-cover cursor-pointer"
+                                                                onClick={() => openLightbox(msg.attachment_url!, 'video')}
+                                                                onLoadedMetadata={() => {
+                                                                    const container = messagesContainerRef.current;
+                                                                    const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+                                                                    try { console.debug('[debug] video onLoadedMetadata', { id: msg.id, pending: pendingScrollIdsRef.current.slice(), isAtBottom, scrollHeight: container?.scrollHeight }); } catch (e) {}
+                                                                    if (pendingScrollIdsRef.current.includes(msg.id)) {
+                                                                        pendingScrollIdsRef.current = pendingScrollIdsRef.current.filter(id => id !== msg.id);
+                                                                        scheduleScrollToBottom();
+                                                                        return;
+                                                                    }
+                                                                    if (hasScrolledInitially.current && isAtBottom && container) {
+                                                                        scheduleScrollToBottom();
+                                                                    }
+                                                                }}
+                                                            />
+                                                            </div>
                                                     )}
 
                                                     {msg.content && <p className="text-sm text-gray-900 break-words">{msg.content}</p>}
@@ -1521,6 +1551,35 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                     )}
                 </div>
             </div>
+
+            {/* Lightbox Modal */}
+            {lightboxOpen && lightboxSrc && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70"
+                    onClick={closeLightbox}
+                    role="dialog"
+                    aria-modal="true"
+                >
+                    <div className="relative max-w-[95%] max-h-[95%] p-4" onClick={(e) => e.stopPropagation()}>
+                        <button
+                            onClick={closeLightbox}
+                            className="absolute top-2 right-2 bg-black/50 text-white rounded-full p-2 z-50"
+                            aria-label="Close"
+                        >
+                            ✕
+                        </button>
+
+                        {lightboxType === 'image' && (
+                            <img src={lightboxSrc} alt="Attachment" className="max-w-full max-h-[80vh] rounded" />
+                        )}
+
+                        {lightboxType === 'video' && (
+                            <video src={lightboxSrc || undefined} controls autoPlay className="max-w-full max-h-[80vh] rounded" />
+                        )}
+                    </div>
+                </div>
+            )}
+
         </>
     );
 }
