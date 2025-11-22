@@ -87,6 +87,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const pendingScrollIdsRef = useRef<number[]>([]);
     // If the page was hard-refreshed, we want to mark messages as seen on load
     const isHardRefreshRef = useRef(false);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
     // Detect hard reload early using useLayoutEffect so that other effects (like the messages effect)
     // see the correct value synchronously during mount.
@@ -1026,9 +1027,13 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     return (
         <>
             <Head title="Chats - ChatApp" />
-            <div className="flex h-screen bg-[#F0F2F5]">
+            <div className="relative flex h-screen bg-[#F0F2F5]">
                 {/* Left Sidebar - Conversation List */}
-                <div className="w-[400px] bg-white border-r border-gray-200 flex flex-col">
+                <div
+    className={`w-full md:w-[400px] bg-white border-r border-gray-200 flex flex-col absolute md:relative z-20 h-full transition-transform transform ${
+        isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+    } md:translate-x-0`}
+>
                     {/* Header */}
                     <div className="bg-[#F0F2F5] px-4 py-3 flex items-center justify-between">
                         <div className="flex items-center space-x-3">
@@ -1040,6 +1045,15 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                             <span className="font-semibold text-gray-900">{auth.user.name}</span>
                         </div>
                         <div className="flex items-center space-x-3">
+                            <button
+                                onClick={() => setIsSidebarOpen(false)}
+                                className="p-2 hover:bg-gray-200 rounded-full transition md:hidden"
+                                title="Close"
+                            >
+                                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
                             <button
                                 onClick={() => setShowUserList(!showUserList)}
                                 className="p-2 hover:bg-gray-200 rounded-full transition"
@@ -1157,6 +1171,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
 
                                             // User explicitly clicked this conversation — mark loaded unseen messages as seen.
                                             loadMessages(conv.id, true);
+                                            setIsSidebarOpen(false);
                                         }}
                                         className={`flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer border-l-4 ${
                                             selectedConversation?.id === conv.id
@@ -1216,7 +1231,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                     {filteredUsers.map(user => (
                                         <div
                                             key={`user-${user.id}`}
-                                            onClick={() => prepareNewChat(user.id)}
+                                            onClick={() => {
+                                                prepareNewChat(user.id);
+                                                setIsSidebarOpen(false);
+                                            }}
                                             className="flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer"
                                         >
                                             <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center">
@@ -1252,6 +1270,15 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                             {/* Chat Header */}
                             <div className="bg-[#F0F2F5] px-4 py-3 flex items-center justify-between border-b border-gray-200">
                                 <div className="flex items-center space-x-3">
+                                    <button
+                                        onClick={() => setIsSidebarOpen(true)}
+                                        className="p-2 hover:bg-gray-200 rounded-full transition md:hidden"
+                                        title="Open Menu"
+                                    >
+                                        <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                        </svg>
+                                    </button>
                                     <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center">
                                         <span className="text-white font-bold text-sm">
                                             {(selectedConversation?.other_user.name || newChatReceiver?.name || '').charAt(0).toUpperCase()}
