@@ -7,6 +7,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class MessageController extends Controller
 {
@@ -168,6 +169,15 @@ class MessageController extends Controller
             $bothUsers = [$conversation->user1_id, $conversation->user2_id];
             
             if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
+                // If the message had an attachment, delete it from storage before removing the record
+                try {
+                    if ($message->attachment_path) {
+                        Storage::disk('public')->delete($message->attachment_path);
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to delete attachment during deleteForMe', ['message_id' => $message->id, 'error' => $e->getMessage()]);
+                }
+
                 $message->delete();
             }
         }
@@ -197,6 +207,22 @@ class MessageController extends Controller
             'unsent' => true,
             'unsent_at' => now(),
         ]);
+
+        // If the message had an attachment, delete the file from storage and clear attachment fields
+        if ($message->attachment_path) {
+            try {
+                Storage::disk('public')->delete($message->attachment_path);
+            } catch (\Exception $e) {
+                \Log::warning('Failed to delete attachment during unsend', ['message_id' => $message->id, 'error' => $e->getMessage()]);
+            }
+
+            // Clear attachment fields so clients don't try to load the file
+            $message->update([
+                'attachment_path' => null,
+                'attachment_type' => null,
+                'attachment_mime_type' => null,
+            ]);
+        }
 
         // If this was the last message, update conversation's updated_at to trigger reordering
         if ($isLastMessage) {
@@ -267,6 +293,15 @@ class MessageController extends Controller
                 
                 // If both users have deleted this message, permanently delete it
                 if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
+                    // Delete attachment file if present before permanently deleting message
+                    try {
+                        if ($message->attachment_path) {
+                            Storage::disk('public')->delete($message->attachment_path);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::warning('Failed to delete attachment during deleteConversation', ['message_id' => $message->id, 'error' => $e->getMessage()]);
+                    }
+
                     $message->delete();
                 }
             }

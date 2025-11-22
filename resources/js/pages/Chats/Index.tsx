@@ -83,6 +83,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const hasScrolledInitially = useRef(false);
     const isSwitchingConversation = useRef(false);
     const isLoadingMoreMessages = useRef(false);
+    const wasAtBottomRef = useRef(false);
+    const pendingScrollIdsRef = useRef<number[]>([]);
     // If the page was hard-refreshed, we want to mark messages as seen on load
     const isHardRefreshRef = useRef(false);
 
@@ -164,9 +166,34 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         }
     }, []);
 
-    // Scroll to bottom of messages
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Scroll to bottom of messages (attempt container scroll first, fallback to end ref)
+    const scrollToBottom = (smooth = true) => {
+        try {
+            const container = messagesContainerRef.current;
+            if (container) {
+                if ((container as any).scrollTo) {
+                    container.scrollTo({ top: container.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+                } else {
+                    container.scrollTop = container.scrollHeight;
+                }
+                return;
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        // Fallback to scrollIntoView
+        messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
+    };
+
+    // Schedule a scroll to bottom after the next paint(s) to ensure DOM updates have occurred
+    const scheduleScrollToBottom = (smooth = true) => {
+        try {
+            requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom(smooth)));
+        } catch (e) {
+            // fallback
+            setTimeout(() => scrollToBottom(smooth), 50);
+        }
     };
 
     // Debug helper to POST message seen with tracing — keeps a single place to observe when /messages/{id}/seen is called
@@ -498,10 +525,32 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                 attachment_url: response.data.message.attachment_url,
             };
 
-            setMessages([...messages, newMessage]);
+            try {
+                const container = messagesContainerRef.current;
+                wasAtBottomRef.current = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+            } catch (e) { wasAtBottomRef.current = false; }
+
+            setMessages(prev => {
+                // push pending id after state update; use functional set to avoid stale state
+                return [...prev, newMessage];
+            });
+
+            // If message has attachment and user was at bottom, mark pending so we scroll after media loads
+            if (newMessage.attachment_url && wasAtBottomRef.current) {
+                pendingScrollIdsRef.current.push(newMessage.id);
+                try {
+                    console.debug('[debug] sent message pendingScroll push', { id: newMessage.id, wasAtBottom: wasAtBottomRef.current, pending: pendingScrollIdsRef.current.slice() });
+                } catch (e) {}
+
+                // Fallback: schedule an extra scroll after a short delay in case media load events or RAF miss it
+                setTimeout(() => {
+                    try { console.debug('[debug] sent message fallback scroll', { id: newMessage.id, pending: pendingScrollIdsRef.current.slice(), scrollHeight: messagesContainerRef.current?.scrollHeight }); } catch (e) {}
+                    scheduleScrollToBottom(false);
+                }, 250);
+            }
+
             setMessage('');
             clearFileSelection();
-            scrollToBottom();
 
             // If this was a new chat, reload conversations and select it
             if (newChatReceiver) {
@@ -608,6 +657,14 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     // Scroll to bottom on initial load after everything is rendered
     useEffect(() => {
         if (messages.length > 0 && messagesContainerRef.current) {
+            // If a caller recorded that we were at bottom before messages were appended,
+            // perform a scheduled scroll and clear the flag.
+            if (wasAtBottomRef.current) {
+                scheduleScrollToBottom();
+                wasAtBottomRef.current = false;
+                return;
+            }
+
             const container = messagesContainerRef.current;
             const lastMessage = messages[messages.length - 1];
             if (!hasScrolledInitially.current) {
@@ -770,11 +827,20 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                 // Default to false when container isn't present to avoid accidental auto-seen
                 const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
 
+                // Remember whether we were at bottom before DOM update
+                try { wasAtBottomRef.current = isAtBottom; } catch (e) { wasAtBottomRef.current = false; }
+
                 setMessages(prev => [...prev, newMessage]);
+
+                // If message has attachment and user was at bottom, mark pending so we scroll after media loads
+                if (newMessage.attachment_url && isAtBottom) {
+                    pendingScrollIdsRef.current.push(newMessage.id);
+                }
 
                 if (isAtBottom) {
                     // If at bottom, auto-scroll and mark seen immediately
-                    scrollToBottom();
+                    // final scroll will be driven by messages effect (safer), but trigger now as well
+                    scheduleScrollToBottom();
                     try { debugPostSeen(event.id, 'incomingMessage_atBottom'); } catch (e) { /* ignore */ }
                 } else {
                     // If user scrolled up, don't auto-scroll — show popup and queue for seen
@@ -794,8 +860,11 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                     attachment_type: event.attachment_type,
                     attachment_url: event.attachment_url,
                 };
+                try { wasAtBottomRef.current = (messagesContainerRef.current ? (messagesContainerRef.current.scrollHeight - messagesContainerRef.current.scrollTop - messagesContainerRef.current.clientHeight) < 100 : false); } catch (e) { wasAtBottomRef.current = false; }
                 setMessages(prev => [...prev, newMessage]);
-                scrollToBottom();
+                if (newMessage.attachment_url && wasAtBottomRef.current) {
+                    pendingScrollIdsRef.current.push(newMessage.id);
+                }
 
                 // Mark as seen immediately if chat is open
                 try {
@@ -1198,7 +1267,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                     <div className="fixed left-1/2 transform -translate-x-1/2 bottom-28 z-50">
                                         <button
                                             onClick={() => {
-                                                scrollToBottom();
+                                                scheduleScrollToBottom();
                                                 markPendingAsSeen();
                                             }}
                                             className="bg-[#25D366] text-white px-4 py-2 rounded-full shadow-md hover:scale-105 transition-transform"
@@ -1273,14 +1342,21 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                         <img
                                                             src={msg.attachment_url}
                                                             alt="Attachment"
-                                                            className="rounded-lg mb-2 max-w-full cursor-pointer hover:opacity-90"
+                                                            className="rounded-lg mb-2 w-64 h-40 md:w-80 md:h-48 lg:w-96 lg:h-56 object-cover cursor-pointer hover:opacity-90"
                                                             onClick={() => window.open(msg.attachment_url!, '_blank')}
                                                             onLoad={() => {
-                                                                // Only auto-scroll if the user is already at (or near) the bottom.
                                                                 const container = messagesContainerRef.current;
                                                                 const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+                                                                try { console.debug('[debug] image onLoad', { id: msg.id, pending: pendingScrollIdsRef.current.slice(), isAtBottom, scrollHeight: container?.scrollHeight }); } catch (e) {}
+                                                                // If this message was marked as pending for scroll, trigger scroll now.
+                                                                if (pendingScrollIdsRef.current.includes(msg.id)) {
+                                                                    // remove id
+                                                                    pendingScrollIdsRef.current = pendingScrollIdsRef.current.filter(id => id !== msg.id);
+                                                                    scheduleScrollToBottom();
+                                                                    return;
+                                                                }
                                                                 if (hasScrolledInitially.current && isAtBottom && container) {
-                                                                    container.scrollTop = container.scrollHeight;
+                                                                    scheduleScrollToBottom();
                                                                 }
                                                             }}
                                                         />
@@ -1289,13 +1365,18 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                         <video
                                                             src={msg.attachment_url}
                                                             controls
-                                                            className="rounded-lg mb-2 max-w-full"
+                                                            className="rounded-lg mb-2 w-64 h-40 md:w-80 md:h-48 lg:w-96 lg:h-56 object-cover"
                                                             onLoadedMetadata={() => {
-                                                                // Only auto-scroll if the user is already at (or near) the bottom.
                                                                 const container = messagesContainerRef.current;
                                                                 const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+                                                                try { console.debug('[debug] video onLoadedMetadata', { id: msg.id, pending: pendingScrollIdsRef.current.slice(), isAtBottom, scrollHeight: container?.scrollHeight }); } catch (e) {}
+                                                                if (pendingScrollIdsRef.current.includes(msg.id)) {
+                                                                    pendingScrollIdsRef.current = pendingScrollIdsRef.current.filter(id => id !== msg.id);
+                                                                    scheduleScrollToBottom();
+                                                                    return;
+                                                                }
                                                                 if (hasScrolledInitially.current && isAtBottom && container) {
-                                                                    container.scrollTop = container.scrollHeight;
+                                                                    scheduleScrollToBottom();
                                                                 }
                                                             }}
                                                         />
@@ -1328,7 +1409,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                 {/* Scroll to Bottom Button */}
                                 {showScrollButton && (
                                     <button
-                                        onClick={scrollToBottom}
+                                        onClick={() => scheduleScrollToBottom()}
                                         className="fixed bottom-24 right-8 bg-white hover:bg-gray-50 rounded-full p-3 shadow-lg transition-all z-10"
                                         title="Scroll to bottom"
                                     >
