@@ -174,17 +174,9 @@ class ConversationController extends Controller
         // Check if there are more messages
         $hasMore = $conversation->messages()->count() > 50;
 
-        // Mark unread messages as seen and broadcast
-        $unreadMessages = $conversation->messages()
-            ->where('user_id', '!=', auth()->id())
-            ->where('seen', false)
-            ->get();
-        
-        foreach ($unreadMessages as $message) {
-            $message->update(['seen' => true]);
-            // Broadcast to sender that message was seen
-            broadcast(new \App\Events\MessageSeen($message));
-        }
+        // NOTE: We no longer auto-mark messages as seen when loading a conversation.
+        // Seen status is managed from the client when the user scrolls to the bottom
+        // to ensure messages are only marked read when actually viewed.
 
         $otherUser = $conversation->getOtherUser(auth()->id());
 

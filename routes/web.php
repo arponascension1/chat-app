@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RegisterController;
 use App\Http\Controllers\ConversationController;
 use App\Http\Controllers\MessageController;
+use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -36,6 +37,11 @@ Route::middleware('auth')->group(function () {
     
     Route::post('/logout', [LoginController::class, 'destroy'])->name('logout');
     
+    // User profile and password management
+    Route::get('/profile', [UserController::class, 'edit']);
+    Route::post('/profile', [UserController::class, 'update']);
+    Route::post('/profile/password', [UserController::class, 'updatePassword']);
+
     // Conversation & Message routes
     Route::get('/conversations', [ConversationController::class, 'index']);
     Route::get('/conversations/{conversation}', [ConversationController::class, 'show']);

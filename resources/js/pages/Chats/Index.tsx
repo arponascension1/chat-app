@@ -7,7 +7,7 @@ declare global {
         } | null;
     }
 }
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { Head, router } from '@inertiajs/react';
 import axios from 'axios';
 import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
@@ -83,7 +83,30 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const hasScrolledInitially = useRef(false);
     const isSwitchingConversation = useRef(false);
     const isLoadingMoreMessages = useRef(false);
+    // If the page was hard-refreshed, we want to mark messages as seen on load
+    const isHardRefreshRef = useRef(false);
+
+    // Detect hard reload early using useLayoutEffect so that other effects (like the messages effect)
+    // see the correct value synchronously during mount.
+    useLayoutEffect(() => {
+        try {
+            const navEntries = (performance && (performance.getEntriesByType)) ? performance.getEntriesByType('navigation') : [];
+            if (navEntries && navEntries.length > 0) {
+                const nav = navEntries[0] as PerformanceNavigationTiming;
+                isHardRefreshRef.current = (nav.type === 'reload');
+            } else if ((performance as any).navigation) {
+                // fallback for older browsers
+                isHardRefreshRef.current = (performance as any).navigation.type === 1;
+            }
+        } catch (e) {
+            // ignore
+        }
+    }, []);
     const [messageMenuOpen, setMessageMenuOpen] = useState<number | null>(null);
+    // New message popup & pending seen tracking
+    const [newMessageCount, setNewMessageCount] = useState(0);
+    const [showNewMessagePopup, setShowNewMessagePopup] = useState(false);
+    const pendingSeenIdsRef = useRef<number[]>([]);
     const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
     const audioUnlockedRef = useRef<boolean>(false);
 
@@ -146,6 +169,29 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
 
+    // Debug helper to POST message seen with tracing — keeps a single place to observe when /messages/{id}/seen is called
+    const debugPostSeen = async (id: number, origin = 'unknown') => {
+        try {
+            console.debug('[debug] postSeen', { id, origin, isSwitching: isSwitchingConversation.current, scrollTop: messagesContainerRef.current?.scrollTop, scrollHeight: messagesContainerRef.current?.scrollHeight, clientHeight: messagesContainerRef.current?.clientHeight });
+        } catch (e) {
+            // ignore logging errors
+        }
+
+        try {
+            await axios.post(`/messages/${id}/seen`);
+        } catch (e) {
+            console.error('[debug] postSeen error', e);
+        }
+    };
+
+    // Debug wrapper for incrementing the new-message popup counter so we can see when it changes
+    const incNewMessageCount = (n: number, origin = 'unknown') => {
+        try {
+            console.debug('[debug] incNewMessageCount', { n, origin, isSwitching: isSwitchingConversation.current, pending: pendingSeenIdsRef.current.length });
+        } catch (e) {}
+        setNewMessageCount(c => c + n);
+    };
+
     // Load conversations
     const loadConversations = useCallback(async () => {
         try {
@@ -159,9 +205,14 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     }, []);
 
     // Load messages for a conversation
-    const loadMessages = useCallback(async (conversationId: number) => {
+    const loadMessages = useCallback(async (conversationId: number, markOnOpen = false) => {
         setIsLoadingMessages(true);
         isSwitchingConversation.current = true;
+        // Clear any pending new-message UI when switching conversations —
+        // pending IDs are per conversation and should not leak between views.
+        pendingSeenIdsRef.current = [];
+        setNewMessageCount(0);
+        setShowNewMessagePopup(false);
 
         try {
             const response = await axios.get(`/conversations/${conversationId}`);
@@ -190,9 +241,38 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                 isSwitchingConversation.current = false;
             }, 200);
 
-            // Backend already marks messages as seen when loading conversation
-            // Refresh conversations list to update unread count
-            loadConversations();
+            // Determine unseen messages from the loaded response
+            const unseenIds: number[] = (response.data.messages || [])
+                .filter((m: any) => !m.is_mine && !m.is_read)
+                .map((m: any) => m.id);
+
+            // After scrolling attempts, decide behavior:
+            // - If this was a hard refresh, mark unseen messages immediately.
+            // - If the user explicitly opened the conversation (markOnOpen === true), mark them as seen.
+            // - Otherwise, queue them to be marked when the user scrolls to bottom or clicks the popup.
+            setTimeout(async () => {
+                if (unseenIds.length > 0) {
+                    if (isHardRefreshRef.current) {
+                        try {
+                            await Promise.all(unseenIds.map((id: number) => debugPostSeen(id, 'hardRefresh')));
+                        } catch (e) { /* ignore */ }
+                        try { loadConversations(); } catch (e) { /* ignore */ }
+                        isHardRefreshRef.current = false;
+                    } else if (markOnOpen) {
+                        // User opened the conversation manually — mark loaded unseen messages as seen
+                        try {
+                            await Promise.all(unseenIds.map((id: number) => debugPostSeen(id, 'openConversation')));
+                        } catch (e) { /* ignore */ }
+                        try { loadConversations(); } catch (e) { /* ignore */ }
+                    } else {
+                        // Queue unseen IDs so they will be marked when the user scrolls manually or clicks the popup.
+                        pendingSeenIdsRef.current.push(...unseenIds);
+                    }
+                } else {
+                    // No unseen messages; refresh conversations to ensure counts are correct
+                    try { loadConversations(); } catch (e) { /* ignore */ }
+                }
+            }, 150);
         } catch (error) {
             console.error('Error loading messages:', error);
             setIsLoadingMessages(false);
@@ -247,6 +327,13 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         // Show scroll button when not at bottom
         const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
         setShowScrollButton(!isAtBottom);
+
+        // If we've scrolled to bottom and there are pending unseen messages, mark them as seen
+        // BUT do not mark while we're in the middle of a programmatic conversation switch
+        // (isSwitchingConversation is set true during loadMessages and false shortly after)
+        if (isAtBottom && pendingSeenIdsRef.current.length > 0 && !isSwitchingConversation.current) {
+            markPendingAsSeen();
+        }
     }, [hasMoreMessages, isLoadingMore, loadMoreMessages]);
 
     // Load all users
@@ -457,14 +544,37 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                 console.error('User not found');
                 return;
             }
+            // Try to find an existing conversation for this user by refreshing conversations
+            try {
+                const convResp = await axios.get('/conversations');
+                const updatedConversations = convResp.data;
+                setConversations(updatedConversations);
 
-            // Set up new chat window
+                const existing = updatedConversations.find((c: Conversation) => c.other_user.id === userId);
+                    if (existing) {
+                    // Load existing conversation messages
+                    setShowUserList(false);
+                    setSearchQuery(''); // Clear search
+                    // Update URL
+                    window.history.pushState({}, '', `/${userId}`);
+                    loadMessages(existing.id, true);
+                    return;
+                }
+            } catch (e) {
+                // If fetching conversations fails, fallback to new chat behavior
+                console.error('Error fetching conversations while preparing new chat', e);
+            }
+
+            // No existing conversation found — set up new chat window
             setNewChatReceiver(user);
             setSelectedConversation(null);
             setMessages([]);
             setShowUserList(false);
             setSearchQuery(''); // Clear search
-            setReceiverIdFromUrl(userId);
+            // Clear any pending popup state (we're actively viewing this user)
+            pendingSeenIdsRef.current = [];
+            setNewMessageCount(0);
+            setShowNewMessagePopup(false);
 
             // Update URL
             window.history.pushState({}, '', `/${userId}`);
@@ -499,6 +609,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     useEffect(() => {
         if (messages.length > 0 && messagesContainerRef.current) {
             const container = messagesContainerRef.current;
+            const lastMessage = messages[messages.length - 1];
             if (!hasScrolledInitially.current) {
                 // Initial load - multiple attempts to ensure we scroll after images load
                 hasScrolledInitially.current = true;
@@ -513,13 +624,53 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                     container.scrollTop = container.scrollHeight;
                 }, 500);
             } else if (!isSwitchingConversation.current && !isLoadingMoreMessages.current) {
-                // After initial load - scroll on new messages (but not when switching conversations or loading more)
-                setTimeout(() => {
-                    container.scrollTop = container.scrollHeight;
-                }, 100);
+                // After initial load - only auto-scroll if user is already at bottom or the last message is from the current user
+                const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+                if (isAtBottom || lastMessage?.is_mine) {
+                    setTimeout(() => {
+                        container.scrollTop = container.scrollHeight;
+                    }, 100);
+                } else {
+                    // User has scrolled up; do not auto-scroll. Leave pending messages popup management to the message handler.
+                }
+            }
+
+            // If this was a hard refresh, mark any loaded unseen messages as seen immediately
+            if (isHardRefreshRef.current) {
+                const unseenIds = (messages || []).filter((m: any) => !m.is_mine && !m.is_read).map((m: any) => m.id);
+                if (unseenIds.length > 0) {
+                    (async () => {
+                        try {
+                            await Promise.all(unseenIds.map((id: number) => axios.post(`/messages/${id}/seen`).catch(() => {})));
+                        } catch (e) {
+                            // ignore
+                        }
+                        try { loadConversations(); } catch (e) { /* ignore */ }
+                        isHardRefreshRef.current = false;
+                    })();
+                } else {
+                    isHardRefreshRef.current = false;
+                }
             }
         }
     }, [messages.length]);
+
+    // Helper to mark pending messages as seen
+    const markPendingAsSeen = async () => {
+        const ids = pendingSeenIdsRef.current.splice(0);
+        if (ids.length === 0) return;
+
+        try {
+            await Promise.all(ids.map(id => debugPostSeen(id, 'markPendingAsSeen')));
+        } catch (e) {
+            // ignore
+        }
+
+        setNewMessageCount(0);
+        setShowNewMessagePopup(false);
+        // Refresh conversations list so unread counts update
+        try { loadConversations(); } catch (e) { /* ignore */ }
+    };
 
     // Restore scroll position after loading more messages (pagination)
     useEffect(() => {
@@ -543,8 +694,21 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         }
         loadUsers();
 
-        // Messages are already marked as seen in the backend when loading conversation
-        // No need to mark them again here
+        // Detect if this navigation was a hard reload. In that case we will mark
+        // any unseen messages as seen once the messages render (user performed a reload).
+        try {
+            const navEntries = (performance && (performance.getEntriesByType)) ? performance.getEntriesByType('navigation') : [];
+            if (navEntries && navEntries.length > 0) {
+                const nav = navEntries[0] as PerformanceNavigationTiming;
+                isHardRefreshRef.current = (nav.type === 'reload');
+            } else if ((performance as any).navigation) {
+                // fallback for older browsers
+                isHardRefreshRef.current = (performance as any).navigation.type === 1;
+            }
+        } catch (e) {
+            // ignore
+        }
+
     }, [initialConversations.length, loadConversations]);
 
     // Auto-select conversation when receiver_id is provided in URL
@@ -588,7 +752,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             playNotificationSound();
 
             // If the message is for current conversation, add it
-            if (selectedConversation && event.conversation_id === selectedConversation.id) {
+                if (selectedConversation && event.conversation_id === selectedConversation.id) {
                 const newMessage: Message = {
                     id: event.id,
                     content: event.content,
@@ -600,14 +764,23 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                     attachment_type: event.attachment_type,
                     attachment_url: event.attachment_url,
                 };
-                setMessages(prev => [...prev, newMessage]);
-                scrollToBottom();
 
-                // Mark as seen immediately if conversation is open
-                try {
-                    axios.post(`/messages/${event.id}/seen`);
-                } catch (error) {
-                    console.error('Error marking message as seen:', error);
+                // Determine if user is currently scrolled to bottom
+                const container = messagesContainerRef.current;
+                // Default to false when container isn't present to avoid accidental auto-seen
+                const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+
+                setMessages(prev => [...prev, newMessage]);
+
+                if (isAtBottom) {
+                    // If at bottom, auto-scroll and mark seen immediately
+                    scrollToBottom();
+                    try { debugPostSeen(event.id, 'incomingMessage_atBottom'); } catch (e) { /* ignore */ }
+                } else {
+                    // If user scrolled up, don't auto-scroll — show popup and queue for seen
+                    pendingSeenIdsRef.current.push(event.id);
+                    incNewMessageCount(1, 'incomingMessage_scrolledUp');
+                    setShowNewMessagePopup(true);
                 }
             } else if (newChatReceiver && event.sender.id === newChatReceiver.id) {
                 const newMessage: Message = {
@@ -626,7 +799,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
 
                 // Mark as seen immediately if chat is open
                 try {
-                    axios.post(`/messages/${event.id}/seen`);
+                    debugPostSeen(event.id, 'incomingNewChat');
                 } catch (error) {
                     console.error('Error marking message as seen:', error);
                 }
@@ -647,7 +820,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
 
             // Update conversations list to show blue tick on last message (only if this is the last message)
             setConversations(prevConversations => {
-                return prevConversations.map(conv => {
+                const prev = Array.isArray(prevConversations) ? prevConversations : [];
+                return prev.map(conv => {
                     // Check if this conversation's last message matches the seen message
                     if (conv.last_message &&
                         conv.id === event.conversation_id &&
@@ -682,8 +856,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         // Listen for message deleted events (updates conversation last message in real-time)
         channel.listen('.message.deleted', (event: any) => {
             setConversations(prevConversations => {
+                // Ensure prevConversations is an array
+                const prev = Array.isArray(prevConversations) ? prevConversations : [];
                 // Copy array so we can mutate/sort locally
-                let updated = [...prevConversations];
+                let updated = [...prev];
 
                 // If new_last_message is null, remove the conversation (all messages deleted)
                 if (event.new_last_message === null) {
@@ -725,7 +901,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         // Listen for conversation deleted events (removes conversation from list)
         channel.listen('.conversation.deleted', (event: any) => {
             setConversations(prevConversations => {
-                return prevConversations.filter(conv => conv.id !== event.conversation_id);
+                const prev = Array.isArray(prevConversations) ? prevConversations : [];
+                return prev.filter(conv => conv.id !== event.conversation_id);
             });
 
             // If the deleted conversation was selected, clear the selection
@@ -733,6 +910,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                 setSelectedConversation(null);
                 setMessages([]);
                 // Redirect to root so URL and UI reflect that conversation is closed
+                // Also clear any pending new-message UI so it doesn't show across other conversations
+                pendingSeenIdsRef.current = [];
+                setNewMessageCount(0);
+                setShowNewMessagePopup(false);
                 router.get('/');
             }
         });
@@ -880,7 +1061,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                 )
                                             );
 
-                                            loadMessages(conv.id);
+                                            // User explicitly clicked this conversation — mark loaded unseen messages as seen.
+                                            loadMessages(conv.id, true);
                                         }}
                                         className={`flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer border-l-4 ${
                                             selectedConversation?.id === conv.id
@@ -1011,6 +1193,20 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         "url('data:image/svg+xml,%3Csvg width=\"60\" height=\"60\" viewBox=\"0 0 60 60\" xmlns=\"http://www.w3.org/2000/svg\"%3E%3Cg fill=\"none\" fill-rule=\"evenodd\"%3E%3Cg fill=\"%23d9d9d9\" fill-opacity=\"0.05\"%3E%3Cpath d=\"M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\"/%3E%3C/g%3E%3C/g%3E%3C/svg%3E')",
                                 }}
                             >
+                                {/* New message popup (visible when user is scrolled up and new messages arrive) */}
+                                {showNewMessagePopup && newMessageCount > 0 && (
+                                    <div className="fixed left-1/2 transform -translate-x-1/2 bottom-28 z-50">
+                                        <button
+                                            onClick={() => {
+                                                scrollToBottom();
+                                                markPendingAsSeen();
+                                            }}
+                                            className="bg-[#25D366] text-white px-4 py-2 rounded-full shadow-md hover:scale-105 transition-transform"
+                                        >
+                                            {newMessageCount} new message{newMessageCount > 1 ? 's' : ''} — scroll down
+                                        </button>
+                                    </div>
+                                )}
                                 {/* Loading indicator at top */}
                                 {isLoadingMore && (
                                     <div className="flex justify-center py-2">
@@ -1080,8 +1276,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                             className="rounded-lg mb-2 max-w-full cursor-pointer hover:opacity-90"
                                                             onClick={() => window.open(msg.attachment_url!, '_blank')}
                                                             onLoad={() => {
-                                                                if (hasScrolledInitially.current && messagesContainerRef.current) {
-                                                                    const container = messagesContainerRef.current;
+                                                                // Only auto-scroll if the user is already at (or near) the bottom.
+                                                                const container = messagesContainerRef.current;
+                                                                const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+                                                                if (hasScrolledInitially.current && isAtBottom && container) {
                                                                     container.scrollTop = container.scrollHeight;
                                                                 }
                                                             }}
@@ -1093,8 +1291,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                                             controls
                                                             className="rounded-lg mb-2 max-w-full"
                                                             onLoadedMetadata={() => {
-                                                                if (hasScrolledInitially.current && messagesContainerRef.current) {
-                                                                    const container = messagesContainerRef.current;
+                                                                // Only auto-scroll if the user is already at (or near) the bottom.
+                                                                const container = messagesContainerRef.current;
+                                                                const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
+                                                                if (hasScrolledInitially.current && isAtBottom && container) {
                                                                     container.scrollTop = container.scrollHeight;
                                                                 }
                                                             }}
