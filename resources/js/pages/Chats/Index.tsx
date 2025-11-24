@@ -16,6 +16,7 @@ interface User {
     id: number;
     name: string;
     email: string;
+    last_active_at?: string | null;
 }
 
 interface ChatsProps {
@@ -58,9 +59,26 @@ interface Message {
 }
 
 export default function Chats({ auth, receiver_id, initialReceiver, initialConversation, initialMessages, initialConversations = [], hasMoreMessages: initialHasMore = false }: ChatsProps) {
-    const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+    // Helper to defensively normalize server-provided collections to arrays
+    const normalizeArray = <T,>(v: any): T[] => {
+        if (!v) return [];
+        if (Array.isArray(v)) return v as T[];
+        try {
+            // Try to convert iterable/array-like structures
+            return Array.from(v) as T[];
+        } catch (e) {
+            try {
+                // Fallback to object values (handles keyed objects)
+                return Object.values(v) as T[];
+            } catch (e) {
+                return [];
+            }
+        }
+    };
+
+    const [conversations, setConversations] = useState<Conversation[]>(normalizeArray<Conversation>(initialConversations));
     const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(initialConversation || null);
-    const [messages, setMessages] = useState<Message[]>(initialMessages || []);
+    const [messages, setMessages] = useState<Message[]>(normalizeArray<Message>(initialMessages));
     const [message, setMessage] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [isLoading, setIsLoading] = useState(initialConversations.length === 0);
@@ -115,6 +133,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const [lightboxOpen, setLightboxOpen] = useState(false);
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
     const [lightboxType, setLightboxType] = useState<'image'|'video' | null>(null);
+    const [onlineUserIds, setOnlineUserIds] = useState<number[]>([]);
     const openLightbox = (src: string, type: 'image'|'video') => {
         setLightboxSrc(src);
         setLightboxType(type);
@@ -163,6 +182,31 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             });
         };
     }, []);
+
+    // Presence: subscribe to presence channel and maintain online users list
+    useEffect(() => {
+        if (!auth.user) return;
+        const Echo = (window as any).Echo;
+        if (!Echo || !Echo.join) return;
+
+        const channel = Echo.join('online')
+            .here((users: any[]) => {
+                try {
+                    const ids = users.map(u => u.id);
+                    setOnlineUserIds(ids);
+                } catch (e) {}
+            })
+            .joining((user: any) => {
+                setOnlineUserIds(prev => Array.from(new Set([...prev, user.id])));
+            })
+            .leaving((user: any) => {
+                setOnlineUserIds(prev => prev.filter(id => id !== user.id));
+            });
+
+        return () => {
+            try { channel.unsubscribe(); } catch (e) {}
+        };
+    }, [auth.user]);
 
     // Close lightbox on ESC
     useEffect(() => {
@@ -244,7 +288,8 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const loadConversations = useCallback(async () => {
         try {
             const response = await axios.get('/conversations');
-            setConversations(response.data);
+            const convData = Array.isArray(response.data) ? response.data : (response.data.conversations ?? response.data);
+            setConversations(convData);
             setIsLoading(false);
         } catch (error) {
             console.error('Error loading conversations:', error);
@@ -264,8 +309,9 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
 
         try {
             const response = await axios.get(`/conversations/${conversationId}`);
-            setMessages(response.data.messages);
-            setHasMoreMessages(response.data.has_more || false);
+            const msgs = normalizeArray<Message>(response.data?.messages);
+            setMessages(msgs);
+            setHasMoreMessages(response.data?.has_more || false);
             // Use provided preselectedConversation if available to avoid overwriting
             // client state when conversations list differs (mobile timing issue)
             setSelectedConversation(preselectedConversation ?? (conversations.find(c => c.id === conversationId) || null));
@@ -292,7 +338,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             }, 200);
 
             // Determine unseen messages from the loaded response
-            const unseenIds: number[] = (response.data.messages || [])
+            const unseenIds: number[] = (msgs || [])
                 .filter((m: any) => !m.is_mine && !m.is_read)
                 .map((m: any) => m.id);
 
@@ -344,10 +390,11 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             const response = await axios.get(`/conversations/${selectedConversation.id}/load-more`, {
                 params: { before_id: oldestMessageId }
             });
-            if (response.data.messages.length > 0) {
+            const moreMsgs = normalizeArray<Message>(response.data?.messages);
+            if (moreMsgs.length > 0) {
                 // Add older messages to the beginning
-                setMessages(prevMessages => [...response.data.messages, ...prevMessages]);
-                setHasMoreMessages(response.data.has_more);
+                setMessages(prevMessages => [...moreMsgs, ...prevMessages]);
+                setHasMoreMessages(response.data?.has_more);
                 // Save scroll restoration info for useEffect
                 window.__chatapp_scroll_restore = {
                     previousScrollTop,
@@ -390,7 +437,8 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const loadUsers = async () => {
         try {
             const response = await axios.get('/users');
-            setAllUsers(response.data);
+            const usersData = Array.isArray(response.data) ? response.data : (response.data.users ?? response.data);
+            setAllUsers(usersData);
         } catch (error) {
             console.error('Error loading users:', error);
         }
@@ -409,7 +457,12 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             const response = await axios.get('/search', {
                 params: { q: query }
             });
-            setSearchResults(response.data);
+            // Ensure the server response shape is normalized to arrays
+            const data = response.data || {};
+            setSearchResults({
+                conversations: Array.isArray(data.conversations) ? data.conversations : (data.conversations ?? []),
+                users: Array.isArray(data.users) ? data.users : (data.users ?? []),
+            });
         } catch (error) {
             console.error('Error searching:', error);
         } finally {
@@ -616,8 +669,9 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             if (!user) {
                 // Fetch all users if not loaded yet
                 const response = await axios.get('/users');
-                setAllUsers(response.data);
-                user = response.data.find((u: User) => u.id === userId);
+                    const usersData = Array.isArray(response.data) ? response.data : (response.data.users ?? response.data);
+                    setAllUsers(usersData);
+                    user = usersData.find((u: User) => u.id === userId);
             }
 
             if (!user) {
@@ -627,10 +681,11 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             // Try to find an existing conversation for this user by refreshing conversations
             try {
                 const convResp = await axios.get('/conversations');
-                const updatedConversations = convResp.data;
+                const convRespData = convResp.data || {};
+                const updatedConversations = Array.isArray(convRespData) ? convRespData : (convRespData.conversations ?? convRespData);
                 setConversations(updatedConversations);
 
-                const existing = updatedConversations.find((c: Conversation) => c.other_user.id === userId);
+                const existing = Array.isArray(updatedConversations) ? updatedConversations.find((c: Conversation) => c.other_user.id === userId) : null;
                     if (existing) {
                     // Load existing conversation messages
                     setShowUserList(false);
@@ -686,6 +741,71 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         } else {
             return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         }
+    };
+
+    // Return a short "active ago" string. Accepts many input shapes from the server:
+    // - ISO strings (2025-11-24T12:34:56Z)
+    // - MySQL-style strings (2025-11-24 12:34:56)
+    // - integer seconds or milliseconds
+    // - Carbon-serialized objects { date: '2025-11-24 12:34:56', timezone_type: 3, timezone: 'UTC' }
+    const activeAgo = (value?: any) => {
+        if (!value) return '';
+
+        // Coerce to millisecond timestamp
+        const parseToMs = (v: any): number | null => {
+            if (v == null) return null;
+            // Number (seconds or milliseconds)
+            if (typeof v === 'number') {
+                // If small, assume seconds
+                return v < 1e12 ? v * 1000 : v;
+            }
+
+            // Numeric string
+            if (typeof v === 'string' && /^\d+$/.test(v)) {
+                const n = parseInt(v, 10);
+                return n < 1e12 ? n * 1000 : n;
+            }
+
+            // If it's an object with a 'date' property (Carbon serialized by some libs)
+            if (typeof v === 'object' && v.date) {
+                v = v.date;
+            }
+
+            // String with space like 'YYYY-MM-DD HH:mm:ss' — convert to ISO-like
+            if (typeof v === 'string') {
+                // If already ISO-like, try parsing as-is
+                let s = v;
+                // Convert MySQL datetime "YYYY-MM-DD HH:mm:ss" to "YYYY-MM-DDTHH:mm:ss" for reliable parsing
+                if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s)) {
+                    s = s.replace(' ', 'T');
+                    // Append Z if no timezone info present to treat as UTC
+                    if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+                        s = s + 'Z';
+                    }
+                }
+
+                const parsed = Date.parse(s);
+                if (!isNaN(parsed)) return parsed;
+            }
+
+            return null;
+        };
+
+        const ms = parseToMs(value);
+        if (!ms) return '';
+
+        const diff = Date.now() - ms;
+        if (diff < 0) return 'Active just now';
+        const sec = Math.floor(diff / 1000);
+        if (sec < 60) return 'Active just now';
+        const min = Math.floor(sec / 60);
+        if (min < 60) return `Active ${min}m ago`;
+        const hours = Math.floor(min / 60);
+        if (hours < 24) return `Active ${hours}h ago`;
+        const days = Math.floor(hours / 24);
+        if (days <= 7) return `Active ${days}d ago`;
+        // Fallback to human date for older activity
+        return `Active ${new Date(ms).toLocaleDateString()}`;
     };
 
     // Scroll to bottom on initial load after everything is rendered
@@ -1182,7 +1302,10 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                         ? searchResults.users
                                         : [];
 
-                                    if (filteredConversations.length === 0 && filteredUsers.length === 0 && searchQuery) {
+                                    const filteredConversationsCount = Array.isArray(filteredConversations) ? filteredConversations.length : 0;
+                                    const filteredUsersCount = Array.isArray(filteredUsers) ? filteredUsers.length : 0;
+
+                                    if (filteredConversationsCount === 0 && filteredUsersCount === 0 && searchQuery) {
                                         return (
                                             <div className="flex flex-col items-center justify-center h-32 text-gray-500 px-4">
                                                 <svg className="w-12 h-12 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1197,7 +1320,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                     return (
                                         <>
                                             {/* Existing conversations */}
-                                            {filteredConversations.map((conv) => (
+                                            {Array.isArray(filteredConversations) ? filteredConversations.map((conv) => (
                                     <div
                                         key={conv.id}
                                         onClick={() => {
@@ -1224,10 +1347,13 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                                 : 'border-transparent'
                                         }`}
                                     >
-                                        <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center">
+                                        <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center relative">
                                             <span className="text-white font-bold">
                                                 {conv.other_user.name.charAt(0).toUpperCase()}
                                             </span>
+                                            {onlineUserIds.includes(conv.other_user.id) && (
+                                                <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25D366] border-2 border-white" />
+                                            )}
                                         </div>
                                         <div className="ml-3 flex-1 min-w-0">
                                             <div className="flex justify-between items-baseline">
@@ -1265,7 +1391,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             </div>
                                         </div>
                                     </div>
-                                    ))}
+                                    )) : null}
 
                                     {/* Users not in conversations */}
                                     {searchQuery && filteredUsers.length > 0 && (
@@ -1273,7 +1399,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             New Contacts
                                         </div>
                                     )}
-                                    {filteredUsers.map(user => (
+                                    {Array.isArray(filteredUsers) ? filteredUsers.map(user => (
                                         <div
                                             key={`user-${user.id}`}
                                             onClick={() => {
@@ -1282,17 +1408,20 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             }}
                                             className="flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer"
                                         >
-                                            <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center">
+                                            <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center relative">
                                                 <span className="text-white font-bold">
                                                     {user.name.charAt(0).toUpperCase()}
                                                 </span>
+                                                {onlineUserIds.includes(user.id) && (
+                                                    <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25D366] border-2 border-white" />
+                                                )}
                                             </div>
                                             <div className="ml-3">
                                                 <h3 className="font-semibold text-gray-900">{user.name}</h3>
                                                 <p className="text-sm text-gray-600">{user.email}</p>
                                             </div>
                                         </div>
-                                    ))}
+                                    )) : null}
                                         </>
                                     );
                                 })()}
@@ -1330,10 +1459,26 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                         </span>
                                     </div>
                                     <div>
-                                        <h3 className="font-semibold text-gray-900">
-                                            {selectedConversation?.other_user.name || newChatReceiver?.name}
-                                        </h3>
-                                        <p className="text-xs text-gray-600">Click to view profile</p>
+                                        <div className="flex items-center space-x-2">
+                                            <h3 className="font-semibold text-gray-900">
+                                                {selectedConversation?.other_user.name || newChatReceiver?.name}
+                                            </h3>
+                                            {/* Online indicator */}
+                                            {((selectedConversation && onlineUserIds.includes(selectedConversation.other_user.id)) || (newChatReceiver && onlineUserIds.includes(newChatReceiver.id))) && (
+                                                <span className="inline-flex items-center text-xs text-green-600">
+                                                    <span className="w-2 h-2 bg-green-500 rounded-full mr-1" />
+                                                    Online
+                                                </span>
+                                            )}
+                                        </div>
+                                        <p className="text-xs text-gray-600">
+                                            {(() => {
+                                                const isOnline = ((selectedConversation && onlineUserIds.includes(selectedConversation.other_user.id)) || (newChatReceiver && onlineUserIds.includes(newChatReceiver.id)));
+                                                if (isOnline) return 'Click to view profile';
+                                                const lastActive = selectedConversation?.other_user.last_active_at ?? newChatReceiver?.last_active_at;
+                                                return lastActive ? activeAgo(lastActive) : 'Click to view profile';
+                                            })()}
+                                        </p>
                                     </div>
                                 </div>
                                 {selectedConversation && (

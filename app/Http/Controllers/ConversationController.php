@@ -52,6 +52,8 @@ class ConversationController extends Controller
                         'id' => $otherUser->id,
                         'name' => $otherUser->name,
                         'email' => $otherUser->email,
+                        // Provide a best-effort last active timestamp for client-side "active ago" display
+                        'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                     ],
                     'last_message' => $lastMessage ? [
                         'id' => $lastMessage->id,
@@ -111,6 +113,7 @@ class ConversationController extends Controller
                         'id' => $otherUser->id,
                         'name' => $otherUser->name,
                         'email' => $otherUser->email,
+                        'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                     ],
                     'last_message' => $lastMessage ? [
                         'id' => $lastMessage->id,
@@ -341,6 +344,7 @@ class ConversationController extends Controller
                         'id' => $otherUser->id,
                         'name' => $otherUser->name,
                         'email' => $otherUser->email,
+                        'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                     ],
                     'last_message' => $lastMessage ? [
                         'id' => $lastMessage->id,
@@ -450,6 +454,7 @@ class ConversationController extends Controller
                     'id' => $receiver->id,
                     'name' => $receiver->name,
                     'email' => $receiver->email,
+                    'last_active_at' => $receiver->last_seen_at ?? $receiver->updated_at,
                 ],
             ];
         }
