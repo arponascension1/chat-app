@@ -23,6 +23,7 @@ interface ChatsProps {
         user: User;
     };
     receiver_id?: number;
+    initialReceiver?: User | null;
     initialConversation?: Conversation;
     initialMessages?: Message[];
     initialConversations?: Conversation[];
@@ -56,7 +57,7 @@ interface Message {
     unsent?: boolean;
 }
 
-export default function Chats({ auth, receiver_id, initialConversation, initialMessages, initialConversations = [], hasMoreMessages: initialHasMore = false }: ChatsProps) {
+export default function Chats({ auth, receiver_id, initialReceiver, initialConversation, initialMessages, initialConversations = [], hasMoreMessages: initialHasMore = false }: ChatsProps) {
     const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
     const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(initialConversation || null);
     const [messages, setMessages] = useState<Message[]>(initialMessages || []);
@@ -70,7 +71,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const [allUsers, setAllUsers] = useState<User[]>([]);
     const [showUserList, setShowUserList] = useState(false);
     const [receiverIdFromUrl, setReceiverIdFromUrl] = useState<number | undefined>(receiver_id);
-    const [newChatReceiver, setNewChatReceiver] = useState<User | null>(null);
+    const [newChatReceiver, setNewChatReceiver] = useState<User | null>(initialReceiver || null);
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const [searchResults, setSearchResults] = useState<{conversations: Conversation[], users: User[]}>({conversations: [], users: []});
     const [isSearching, setIsSearching] = useState(false);
@@ -252,7 +253,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     }, []);
 
     // Load messages for a conversation
-    const loadMessages = useCallback(async (conversationId: number, markOnOpen = false) => {
+    const loadMessages = useCallback(async (conversationId: number, markOnOpen = false, preselectedConversation?: Conversation | null) => {
         setIsLoadingMessages(true);
         isSwitchingConversation.current = true;
         // Clear any pending new-message UI when switching conversations —
@@ -265,7 +266,9 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             const response = await axios.get(`/conversations/${conversationId}`);
             setMessages(response.data.messages);
             setHasMoreMessages(response.data.has_more || false);
-            setSelectedConversation(conversations.find(c => c.id === conversationId) || null);
+            // Use provided preselectedConversation if available to avoid overwriting
+            // client state when conversations list differs (mobile timing issue)
+            setSelectedConversation(preselectedConversation ?? (conversations.find(c => c.id === conversationId) || null));
             setIsLoadingMessages(false);
 
             // Multiple instant scroll attempts to ensure we reach bottom after content loads
@@ -438,6 +441,17 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (file) {
+            // Validate mime type on client to avoid server-side 422 and invalid previews
+            const mime = file.type || '';
+            if (!(mime.startsWith('image/') || mime.startsWith('video/'))) {
+                // Not a supported media type - ignore and notify user
+                alert('Only images and videos are supported as attachments.');
+                if (fileInputRef.current) fileInputRef.current.value = '';
+                setSelectedFile(null);
+                setFilePreview(null);
+                return;
+            }
+
             setSelectedFile(file);
 
             // Create preview for images and videos
@@ -623,7 +637,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                     setSearchQuery(''); // Clear search
                     // Update URL
                     window.history.pushState({}, '', `/${userId}`);
-                    loadMessages(existing.id, true);
+                        // Set selected conversation immediately so UI shows while messages load
+                        setSelectedConversation(existing);
+                        setMessages([]);
+                        loadMessages(existing.id, true, existing);
                     return;
                 }
             } catch (e) {
@@ -793,6 +810,12 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
         }
 
         if (receiverIdFromUrl && !isLoading) {
+            // If server provided an initialReceiver and we already initialized newChatReceiver
+            // skip extra work to avoid redundant fetches.
+            if (newChatReceiver && newChatReceiver.id === receiverIdFromUrl) {
+                setReceiverIdFromUrl(undefined);
+                return;
+            }
             // Find conversation with this receiver
             const conversation = conversations.find(
                 conv => conv.other_user.id === receiverIdFromUrl
@@ -801,7 +824,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
             if (conversation) {
                 // User navigated directly to a conversation via URL — treat this as an explicit open
                 // so unseen messages should be marked as seen immediately.
-                loadMessages(conversation.id, true);
+                // Ensure UI shows immediately while messages load.
+                setSelectedConversation(conversation);
+                setMessages([]);
+                loadMessages(conversation.id, true, conversation);
             } else {
                 // No conversation exists, prepare new chat window
                 prepareNewChat(receiverIdFromUrl);
@@ -1186,7 +1212,10 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                             );
 
                                             // User explicitly clicked this conversation — mark loaded unseen messages as seen.
-                                            loadMessages(conv.id, true);
+                                                                        // Set selected conversation immediately to avoid a blank center while messages load
+                                                                        setSelectedConversation(conv);
+                                                                        setMessages([]);
+                                                                        loadMessages(conv.id, true, conv);
                                             setIsSidebarOpen(false);
                                         }}
                                         className={`flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer border-l-4 ${
@@ -1318,6 +1347,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         </svg>
                                     </button>
                                 )}
+                                {/* upload progress removed as requested */}
                             </div>
 
                             {/* Messages Area */}
@@ -1357,7 +1387,7 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         className={`flex ${msg.is_mine ? 'justify-end' : 'justify-start'} group relative`}
                                     >
                                         {/* Message options dropdown */}
-                                        <div className={`${msg.is_mine ? 'order-1 mr-2' : 'order-2 ml-2'} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                                        <div className={`${msg.is_mine ? 'order-1 mr-2' : 'order-2 ml-2'} ${messageMenuOpen === msg.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
                                             <div className="relative">
                                                 <button
                                                     onClick={() => setMessageMenuOpen(messageMenuOpen === msg.id ? null : msg.id)}
@@ -1505,11 +1535,20 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                 {/* File Preview */}
                                 {filePreview && (
                                     <div className="mb-2 relative inline-block">
-                                        <div className="relative bg-white p-2 rounded-lg shadow-md">
+                                        <div className="relative bg-white p-2 rounded-lg shadow-md max-w-xs">
                                             {selectedFile?.type.startsWith('image/') ? (
-                                                <img src={filePreview} alt="Preview" className="max-h-32 rounded" />
+                                                <img src={filePreview} alt="Preview" className="max-h-32 rounded object-contain" />
+                                            ) : selectedFile?.type.startsWith('video/') ? (
+                                                <video src={filePreview} className="max-h-32 rounded" controls />
                                             ) : (
-                                                <video src={filePreview} className="max-h-32 rounded" />
+                                                <div className="flex items-center space-x-2 p-2">
+                                                    <div className="w-10 h-10 bg-gray-200 rounded flex items-center justify-center">
+                                                        <svg className="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                                        </svg>
+                                                    </div>
+                                                    <div className="text-sm text-gray-700">{selectedFile?.name}</div>
+                                                </div>
                                             )}
                                             <button
                                                 onClick={clearFileSelection}
@@ -1537,6 +1576,8 @@ export default function Chats({ auth, receiver_id, initialConversation, initialM
                                         ref={fileInputRef}
                                         type="file"
                                         accept="image/*,video/*"
+                                        // hint mobile devices to open camera/video capture when possible
+                                        capture="environment"
                                         onChange={handleFileSelect}
                                         className="hidden"
                                     />

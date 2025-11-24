@@ -513,6 +513,12 @@ class ConversationController extends Controller
                 'user' => auth()->user(),
             ],
             'receiver_id' => (int) $receiverId,
+            // Provide receiver details so the client can open a new chat immediately
+            'initialReceiver' => $receiver ? [
+                'id' => $receiver->id,
+                'name' => $receiver->name,
+                'email' => $receiver->email,
+            ] : null,
             'initialConversation' => $initialConversation,
             'initialMessages' => $messages,
             'initialConversations' => $conversations,
