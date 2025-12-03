@@ -38,12 +38,24 @@ class HandleInertiaRequests extends Middleware
     {
         [$message, $author] = str(Inspiring::quotes()->random())->explode('-');
 
+        // Transform user to include fully-resolved avatar URL
+        $user = $request->user();
+        $userPayload = null;
+        if ($user) {
+            $userPayload = [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'avatar' => $user->avatar ? asset('storage/' . $user->avatar) : null,
+            ];
+        }
+
         return [
             ...parent::share($request),
             'name' => config('app.name'),
             'quote' => ['message' => trim($message), 'author' => trim($author)],
             'auth' => [
-                'user' => $request->user(),
+                'user' => $userPayload,
             ],
         ];
     }

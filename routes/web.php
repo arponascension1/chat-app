@@ -22,10 +22,10 @@ Route::get('/welcome', function () {
 Route::middleware('guest')->group(function () {
     Route::get('/login', [LoginController::class, 'create'])->name('login');
     Route::post('/login', [LoginController::class, 'store']);
-    
+
     Route::get('/register', [RegisterController::class, 'create'])->name('register');
     Route::post('/register', [RegisterController::class, 'store']);
-    
+
     // Google Authentication routes
     Route::get('/auth/google', [GoogleAuthController::class, 'redirect'])->name('auth.google');
     Route::get('/auth/google/callback', [GoogleAuthController::class, 'callback']);
@@ -34,13 +34,14 @@ Route::middleware('guest')->group(function () {
 // Authenticated routes
 Route::middleware('auth')->group(function () {
     Route::get('/', [ConversationController::class, 'home'])->name('home');
-    
+
     Route::post('/logout', [LoginController::class, 'destroy'])->name('logout');
-    
+
     // User profile and password management
     Route::get('/profile', [UserController::class, 'edit']);
     Route::post('/profile', [UserController::class, 'update']);
     Route::post('/profile/password', [UserController::class, 'updatePassword']);
+    Route::delete('/profile/avatar', [UserController::class, 'deleteAvatar']);
 
     // Conversation & Message routes
     Route::get('/conversations', [ConversationController::class, 'index']);
@@ -53,7 +54,7 @@ Route::middleware('auth')->group(function () {
     Route::delete('/messages/{message}/delete-for-me', [MessageController::class, 'deleteForMe']);
     Route::delete('/messages/{message}/unsend', [MessageController::class, 'unsend']);
     Route::delete('/conversations/{conversation}/delete', [MessageController::class, 'deleteConversation']);
-    
+
     // Direct chat route with receiver_id
     Route::get('/{receiver_id}', [ConversationController::class, 'chatWithUser'])->where('receiver_id', '[0-9]+');
 });

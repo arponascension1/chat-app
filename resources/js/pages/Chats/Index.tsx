@@ -8,14 +8,16 @@ declare global {
     }
 }
 import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
-import { Head, router } from '@inertiajs/react';
+import { Head, router, Link } from '@inertiajs/react';
 import axios from 'axios';
 import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
+import { getUserAvatarUrl } from '@/lib/utils';
 
 interface User {
     id: number;
     name: string;
     email: string;
+    avatar?: string | null;
     last_active_at?: string | null;
 }
 
@@ -86,6 +88,17 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const [isLoadingMessages, setIsLoadingMessages] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesContainerRef = useRef<HTMLDivElement>(null);
+    
+    // Scroll to bottom immediately when container mounts with initial messages
+    const messagesContainerCallback = useCallback((node: HTMLDivElement | null) => {
+        messagesContainerRef.current = node;
+        if (node && initialMessages && initialMessages.length > 0 && !hasScrolledInitially.current) {
+            // Immediately scroll to bottom on mount to prevent jump
+            requestAnimationFrame(() => {
+                node.scrollTop = node.scrollHeight;
+            });
+        }
+    }, []);
     const [allUsers, setAllUsers] = useState<User[]>([]);
     const [showUserList, setShowUserList] = useState(false);
     const [receiverIdFromUrl, setReceiverIdFromUrl] = useState<number | undefined>(receiver_id);
@@ -310,32 +323,28 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         try {
             const response = await axios.get(`/conversations/${conversationId}`);
             const msgs = normalizeArray<Message>(response.data?.messages);
-            setMessages(msgs);
-            setHasMoreMessages(response.data?.has_more || false);
+            
             // Use provided preselectedConversation if available to avoid overwriting
             // client state when conversations list differs (mobile timing issue)
             setSelectedConversation(preselectedConversation ?? (conversations.find(c => c.id === conversationId) || null));
-            setIsLoadingMessages(false);
-
-            // Multiple instant scroll attempts to ensure we reach bottom after content loads
-            const scrollToEnd = () => {
-                if (messagesContainerRef.current) {
-                    messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-                }
-            };
-
-            // Immediate scroll
-            scrollToEnd();
-
-            // Multiple delayed scrolls to catch late-loading content
-            setTimeout(scrollToEnd, 0);
-            setTimeout(scrollToEnd, 50);
-            setTimeout(scrollToEnd, 150);
-
-            // Reset flag after all scrolls
-            setTimeout(() => {
-                isSwitchingConversation.current = false;
-            }, 200);
+            setHasMoreMessages(response.data?.has_more || false);
+            
+            // Update messages state
+            setMessages(msgs);
+            
+            // Wait for DOM update and scroll immediately before removing loading state
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (messagesContainerRef.current) {
+                        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+                    }
+                    // Small delay to ensure images start loading before we show content
+                    setTimeout(() => {
+                        setIsLoadingMessages(false);
+                        isSwitchingConversation.current = false;
+                    }, 100);
+                });
+            });
 
             // Determine unseen messages from the loaded response
             const unseenIds: number[] = (msgs || [])
@@ -822,18 +831,18 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             const container = messagesContainerRef.current;
             const lastMessage = messages[messages.length - 1];
             if (!hasScrolledInitially.current) {
-                // Initial load - multiple attempts to ensure we scroll after images load
+                // Initial load - immediate scroll to bottom without animation
                 hasScrolledInitially.current = true;
-                container.scrollTop = container.scrollHeight;
-                setTimeout(() => {
+                // Scroll immediately and repeatedly to handle images loading
+                const scrollToEnd = () => {
                     container.scrollTop = container.scrollHeight;
-                }, 50);
-                setTimeout(() => {
-                    container.scrollTop = container.scrollHeight;
-                }, 200);
-                setTimeout(() => {
-                    container.scrollTop = container.scrollHeight;
-                }, 500);
+                };
+                scrollToEnd();
+                requestAnimationFrame(scrollToEnd);
+                setTimeout(scrollToEnd, 0);
+                setTimeout(scrollToEnd, 50);
+                setTimeout(scrollToEnd, 150);
+                setTimeout(scrollToEnd, 300);
             } else if (!isSwitchingConversation.current && !isLoadingMoreMessages.current) {
                 // After initial load - only auto-scroll if user is already at bottom or the last message is from the current user
                 const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
@@ -1190,47 +1199,92 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         <>
             <Head title="Chats - ChatApp" />
             <div className="relative flex h-screen bg-[#F0F2F5]">
-                {/* Left Sidebar - Conversation List */}
+                {/* Left Menu Bar - Vertical Icons at Bottom */}
+                <div className="hidden md:flex flex-col bg-[#008069] w-16 items-center justify-end py-4 space-y-6">
+                    <Link href="/" className="p-2 hover:bg-[#017561] rounded-full transition bg-[#017561]" title="Chats">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                    </Link>
+                    <Link href="/profile" className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center cursor-pointer hover:opacity-90 transition" title="Profile">
+                        {getUserAvatarUrl(auth.user) ? (
+                            <img src={getUserAvatarUrl(auth.user)!} alt={auth.user.name} className="w-full h-full rounded-full object-cover" />
+                        ) : (
+                            <span className="text-white font-bold text-sm">
+                                {auth.user.name.charAt(0).toUpperCase()}
+                            </span>
+                        )}
+                    </Link>
+                    <Link href="/profile" className="p-2 hover:bg-[#017561] rounded-full transition" title="Settings">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </Link>
+                    <button
+                        onClick={handleLogout}
+                        className="p-2 hover:bg-[#017561] rounded-full transition"
+                        title="Logout"
+                    >
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                        </svg>
+                    </button>
+                </div>
+
+                {/* Middle Sidebar - Conversation List */}
                 <div
     className={`w-full md:w-[400px] bg-white border-r border-gray-200 flex flex-col absolute md:relative z-20 h-full transition-transform transform ${
         isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
     } md:translate-x-0`}
 >
-                    {/* Header */}
-                    <div className="bg-[#F0F2F5] px-4 py-3 flex items-center justify-between">
+                    {/* Header - Mobile Only */}
+                    <div className="bg-[#008069] px-4 py-3 flex items-center justify-between md:hidden">
                         <div className="flex items-center space-x-3">
-                            <div className="w-10 h-10 bg-[#25D366] rounded-full flex items-center justify-center cursor-pointer">
-                                <span className="text-white font-bold text-sm">
-                                    {auth.user.name.charAt(0).toUpperCase()}
-                                </span>
-                            </div>
-                            <span className="font-semibold text-gray-900">{auth.user.name}</span>
+                            <Link href="/profile" className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center cursor-pointer hover:opacity-90 transition">
+                                {getUserAvatarUrl(auth.user) ? (
+                                    <img src={getUserAvatarUrl(auth.user)!} alt={auth.user.name} className="w-full h-full rounded-full object-cover" />
+                                ) : (
+                                    <span className="text-white font-bold text-sm">
+                                        {auth.user.name.charAt(0).toUpperCase()}
+                                    </span>
+                                )}
+                            </Link>
                         </div>
-                        <div className="flex items-center space-x-3">
+                        <div className="flex items-center space-x-2">
+                            <button
+                                onClick={() => setShowUserList(!showUserList)}
+                                className="p-2 hover:bg-[#017561] rounded-full transition"
+                                title="New Chat"
+                            >
+                                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                            </button>
                             <button
                                 onClick={() => setIsSidebarOpen(false)}
-                                className="p-2 hover:bg-gray-200 rounded-full transition md:hidden"
+                                className="p-2 hover:bg-[#017561] rounded-full transition"
                                 title="Close"
                             >
-                                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                             </button>
-                            <button
-                                onClick={() => setShowUserList(!showUserList)}
-                                className="p-2 hover:bg-gray-200 rounded-full transition"
-                                title="New Chat"
-                            >
-                                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                                </svg>
-                            </button>
-                            <button onClick={handleLogout} className="p-2 hover:bg-gray-200 rounded-full transition">
-                                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                                </svg>
-                            </button>
                         </div>
+                    </div>
+
+                    {/* MyChat Logo + New Chat Button - Desktop */}
+                    <div className="hidden md:flex bg-[#F0F2F5] px-4 py-3 items-center justify-between border-b border-gray-200">
+                        <h1 className="text-xl font-bold text-[#008069]">MyChat</h1>
+                        <button
+                            onClick={() => setShowUserList(!showUserList)}
+                            className="p-2 hover:bg-gray-200 rounded-full transition"
+                            title="New Chat"
+                        >
+                            <svg className="w-6 h-6 text-[#008069]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                            </svg>
+                        </button>
                     </div>
 
                     {/* Search */}
@@ -1265,9 +1319,13 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                     className="flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer"
                                 >
                                     <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center">
-                                        <span className="text-white font-bold">
-                                            {user.name.charAt(0).toUpperCase()}
-                                        </span>
+                                        {getUserAvatarUrl(user) ? (
+                                            <img src={getUserAvatarUrl(user)!} alt={user.name} className="w-full h-full rounded-full object-cover" />
+                                        ) : (
+                                            <span className="text-white font-bold">
+                                                {user.name.charAt(0).toUpperCase()}
+                                            </span>
+                                        )}
                                     </div>
                                     <div className="ml-3">
                                         <h3 className="font-semibold text-gray-900">{user.name}</h3>
@@ -1348,9 +1406,13 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                         }`}
                                     >
                                         <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center relative">
-                                            <span className="text-white font-bold">
-                                                {conv.other_user.name.charAt(0).toUpperCase()}
-                                            </span>
+                                            {getUserAvatarUrl(conv.other_user) ? (
+                                                <img src={getUserAvatarUrl(conv.other_user)!} alt={conv.other_user.name} className="w-full h-full rounded-full object-cover" />
+                                            ) : (
+                                                <span className="text-white font-bold">
+                                                    {conv.other_user.name.charAt(0).toUpperCase()}
+                                                </span>
+                                            )}
                                             {onlineUserIds.includes(conv.other_user.id) && (
                                                 <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25D366] border-2 border-white" />
                                             )}
@@ -1409,9 +1471,13 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             className="flex items-center px-4 py-3 hover:bg-[#F5F6F6] cursor-pointer"
                                         >
                                             <div className="w-12 h-12 bg-gray-300 rounded-full flex items-center justify-center relative">
-                                                <span className="text-white font-bold">
-                                                    {user.name.charAt(0).toUpperCase()}
-                                                </span>
+                                                {getUserAvatarUrl(user) ? (
+                                                    <img src={getUserAvatarUrl(user)!} alt={user.name} className="w-full h-full rounded-full object-cover" />
+                                                ) : (
+                                                    <span className="text-white font-bold">
+                                                        {user.name.charAt(0).toUpperCase()}
+                                                    </span>
+                                                )}
                                                 {onlineUserIds.includes(user.id) && (
                                                     <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25D366] border-2 border-white" />
                                                 )}
@@ -1441,70 +1507,82 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                         </div>
                     ) : (selectedConversation || newChatReceiver || receiverIdFromUrl) ? (
                         <>
-                            {/* Chat Header */}
-                            <div className="bg-[#F0F2F5] px-4 py-3 flex items-center justify-between border-b border-gray-200">
-                                <div className="flex items-center space-x-3">
+                            {/* Chat Header - WhatsApp Style */}
+                            <div className="bg-[#F0F2F5] px-4 py-2.5 flex items-center justify-between border-b border-gray-200">
+                                <div className="flex items-center space-x-3 flex-1">
                                     <button
                                         onClick={() => setIsSidebarOpen(true)}
                                         className="p-2 hover:bg-gray-200 rounded-full transition md:hidden"
                                         title="Open Menu"
                                     >
                                         <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                                         </svg>
                                     </button>
-                                    <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center">
-                                        <span className="text-white font-bold text-sm">
-                                            {(selectedConversation?.other_user.name || newChatReceiver?.name || '').charAt(0).toUpperCase()}
-                                        </span>
+                                    <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center flex-shrink-0">
+                                        {(selectedConversation?.other_user?.avatar || newChatReceiver?.avatar) ? (
+                                            <img src={getUserAvatarUrl(selectedConversation?.other_user || newChatReceiver)!} alt={selectedConversation?.other_user.name || newChatReceiver?.name} className="w-full h-full rounded-full object-cover" />
+                                        ) : (
+                                            <span className="text-white font-bold text-sm">
+                                                {(selectedConversation?.other_user.name || newChatReceiver?.name || '').charAt(0).toUpperCase()}
+                                            </span>
+                                        )}
                                     </div>
-                                    <div>
-                                        <div className="flex items-center space-x-2">
-                                            <h3 className="font-semibold text-gray-900">
-                                                {selectedConversation?.other_user.name || newChatReceiver?.name}
-                                            </h3>
-                                            {/* Online indicator */}
-                                            {((selectedConversation && onlineUserIds.includes(selectedConversation.other_user.id)) || (newChatReceiver && onlineUserIds.includes(newChatReceiver.id))) && (
-                                                <span className="inline-flex items-center text-xs text-green-600">
-                                                    <span className="w-2 h-2 bg-green-500 rounded-full mr-1" />
-                                                    Online
-                                                </span>
-                                            )}
-                                        </div>
-                                        <p className="text-xs text-gray-600">
+                                    <div className="flex-1 min-w-0">
+                                        <h3 className="font-semibold text-gray-900 truncate">
+                                            {selectedConversation?.other_user.name || newChatReceiver?.name}
+                                        </h3>
+                                        <p className="text-xs text-gray-500 truncate">
                                             {(() => {
                                                 const isOnline = ((selectedConversation && onlineUserIds.includes(selectedConversation.other_user.id)) || (newChatReceiver && onlineUserIds.includes(newChatReceiver.id)));
-                                                if (isOnline) return 'Click to view profile';
+                                                if (isOnline) return 'online';
                                                 const lastActive = selectedConversation?.other_user.last_active_at ?? newChatReceiver?.last_active_at;
-                                                return lastActive ? activeAgo(lastActive) : 'Click to view profile';
+                                                return lastActive ? activeAgo(lastActive).replace('Active ', '') : 'offline';
                                             })()}
                                         </p>
                                     </div>
                                 </div>
-                                {selectedConversation && (
-                                    <button
-                                        onClick={handleDeleteConversation}
-                                        className="p-2 hover:bg-gray-200 rounded-full transition-colors"
-                                        title="Delete conversation"
-                                    >
+                                <div className="flex items-center space-x-1">
+                                    <button className="p-2 hover:bg-gray-200 rounded-full transition-colors" title="Search">
                                         <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                                         </svg>
                                     </button>
-                                )}
-                                {/* upload progress removed as requested */}
+                                    {selectedConversation && (
+                                        <button
+                                            onClick={handleDeleteConversation}
+                                            className="p-2 hover:bg-gray-200 rounded-full transition-colors"
+                                            title="Delete conversation"
+                                        >
+                                            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                        </button>
+                                    )}
+                                    <button className="p-2 hover:bg-gray-200 rounded-full transition-colors" title="More options">
+                                        <svg className="w-5 h-5 text-gray-600" fill="currentColor" viewBox="0 0 20 20">
+                                            <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                                        </svg>
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Messages Area */}
-                            <div
-                                ref={messagesContainerRef}
-                                onScroll={handleScroll}
-                                className="flex-1 overflow-y-auto p-4 space-y-3"
-                                style={{
-                                    backgroundImage:
-                                        "url('data:image/svg+xml,%3Csvg width=\"60\" height=\"60\" viewBox=\"0 0 60 60\" xmlns=\"http://www.w3.org/2000/svg\"%3E%3Cg fill=\"none\" fill-rule=\"evenodd\"%3E%3Cg fill=\"%23d9d9d9\" fill-opacity=\"0.05\"%3E%3Cpath d=\"M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\"/%3E%3C/g%3E%3C/g%3E%3C/svg%3E')",
-                                }}
-                            >
+                            <div className="flex-1 relative overflow-hidden" style={{
+                                backgroundImage:
+                                    "url('data:image/svg+xml,%3Csvg width=\"60\" height=\"60\" viewBox=\"0 0 60 60\" xmlns=\"http://www.w3.org/2000/svg\"%3E%3Cg fill=\"none\" fill-rule=\"evenodd\"%3E%3Cg fill=\"%23d9d9d9\" fill-opacity=\"0.05\"%3E%3Cpath d=\"M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\"/%3E%3C/g%3E%3C/g%3E%3C/svg%3E')",
+                            }}>
+                                {/* Loading spinner overlay */}
+                                {isLoadingMessages && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-[#EFEAE2] z-10">
+                                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#25D366]"></div>
+                                    </div>
+                                )}
+                                <div
+                                    ref={messagesContainerCallback}
+                                    onScroll={handleScroll}
+                                    className="h-full overflow-y-auto p-4 space-y-3"
+                                >
                                 {/* New message popup (visible when user is scrolled up and new messages arrive) */}
                                 {showNewMessagePopup && newMessageCount > 0 && (
                                     <div className="fixed left-1/2 transform -translate-x-1/2 bottom-28 z-50">
@@ -1653,12 +1731,13 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                     </div>
                                 ))}
                                 <div ref={messagesEndRef} />
-
+                                </div>
+                                
                                 {/* Scroll to Bottom Button */}
                                 {showScrollButton && (
                                     <button
                                         onClick={() => scheduleScrollToBottom()}
-                                        className="fixed bottom-24 right-8 bg-white hover:bg-gray-50 rounded-full p-3 shadow-lg transition-all z-10"
+                                        className="absolute bottom-20 right-8 bg-white hover:bg-gray-50 rounded-full p-3 shadow-lg transition-all z-20"
                                         title="Scroll to bottom"
                                     >
                                         <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1767,29 +1846,39 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                     ) : (
                         <>
                             {/* Mobile header for when no conversation is selected */}
-                            <div className="md:hidden bg-[#F0F2F5] px-3 py-2 border-b border-gray-200 flex items-center">
+                            <div className="md:hidden bg-[#008069] px-3 py-3 border-b border-gray-200 flex items-center">
                                 <button
                                     onClick={() => setIsSidebarOpen(true)}
-                                    className="p-2 hover:bg-gray-200 rounded-full transition mr-2"
+                                    className="p-2 hover:bg-[#017561] rounded-full transition mr-2"
                                     title="Open Menu"
                                 >
-                                    <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                                     </svg>
                                 </button>
-                                <h3 className="font-semibold text-gray-900">Chats</h3>
+                                <h3 className="font-semibold text-white text-lg">MyChat</h3>
                             </div>
 
-                            <div className="flex-1 flex items-center justify-center">
-                            <div className="text-center">
-                                <div className="w-32 h-32 bg-[#F0F2F5] rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <svg className="w-16 h-16 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-1.38 0-2.68-.33-3.83-.91l-.27-.17-2.83.48.48-2.83-.17-.27C4.83 14.68 4.5 13.38 4.5 12c0-4.14 3.36-7.5 7.5-7.5s7.5 3.36 7.5 7.5-3.36 7.5-7.5 7.5zm4.5-6.5c-.25-.12-1.47-.72-1.69-.81-.23-.08-.39-.12-.56.12-.17.25-.64.81-.78.97-.14.17-.29.19-.54.06-.25-.12-1.05-.39-2-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.02-.38.11-.51.11-.11.25-.29.37-.43s.17-.25.25-.41c.08-.17.04-.31-.02-.43s-.56-1.34-.76-1.84c-.2-.48-.41-.42-.56-.43h-.48c-.17 0-.43.06-.66.31-.23.25-.87.85-.87 2.07s.89 2.4 1.01 2.56c.12.17 1.75 2.67 4.23 3.74.59.26 1.05.41 1.41.52.59.19 1.13.16 1.56.1.48-.07 1.47-.6 1.67-1.18.21-.58.21-1.07.14-1.18s-.22-.17-.47-.29z" />
+                            <div className="flex-1 flex items-center justify-center bg-[#F8F9FA]">
+                            <div className="text-center px-8">
+                                <div className="w-48 h-48 mx-auto mb-8 relative">
+                                    <svg viewBox="0 0 303 172" className="w-full h-full">
+                                        <defs>
+                                            <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" style={{stopColor: '#00d856', stopOpacity: 0.5}} />
+                                                <stop offset="100%" style={{stopColor: '#00a884', stopOpacity: 0.8}} />
+                                            </linearGradient>
+                                        </defs>
+                                        <path fill="url(#grad)" d="M96.7 91.7c-5.4 0-10.8-2.1-15-6.2L37.3 41C28.9 32.6 28.9 19 37.3 10.5 45.7 2.1 59.2 2.1 67.7 10.5l29.1 29.1L184.3 1.5c8.4-8.4 21.9-8.4 30.3 0 8.4 8.4 8.4 21.9 0 30.3L111.7 85.5c-4.2 4.1-9.6 6.2-15 6.2z"/>
                                     </svg>
                                 </div>
-                                <h3 className="text-xl font-semibold text-gray-700 mb-2">Welcome to ChatApp</h3>
-                                <p className="text-gray-500">Select a conversation to start messaging</p>
-                                <p className="text-gray-500 mt-1">or click + to start a new chat</p>
+                                <h3 className="text-3xl font-light text-gray-700 mb-4">MyChat Web</h3>
+                                <p className="text-gray-500 text-sm leading-relaxed mb-2">
+                                    Send and receive messages instantly.
+                                </p>
+                                <p className="text-gray-500 text-sm leading-relaxed">
+                                    Select a chat to start messaging.
+                                </p>
                             </div>
                         </div>
                         </>

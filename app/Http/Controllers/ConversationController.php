@@ -49,12 +49,14 @@ class ConversationController extends Controller
                 return [
                     'id' => $conversation->id,
                     'other_user' => [
-                        'id' => $otherUser->id,
-                        'name' => $otherUser->name,
-                        'email' => $otherUser->email,
-                        // Provide a best-effort last active timestamp for client-side "active ago" display
-                        'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
-                    ],
+                            'id' => $otherUser->id,
+                            'name' => $otherUser->name,
+                            'email' => $otherUser->email,
+                            // Return fully-resolved URL for avatar when available
+                            'avatar' => $otherUser->avatar ? asset('storage/' . $otherUser->avatar) : null,
+                            // Provide a best-effort last active timestamp for client-side "active ago" display
+                            'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
+                        ],
                     'last_message' => $lastMessage ? [
                         'id' => $lastMessage->id,
                         'content' => $lastMessageContent,
@@ -69,9 +71,19 @@ class ConversationController extends Controller
             ->sortByDesc('updated_at')
             ->values();
 
+        // Provide a minimal auth user payload with fully-resolved avatar URL so the frontend
+        // can render images without needing to prefix /storage/ itself.
+        $authUser = auth()->user();
+        $authPayload = [
+            'id' => $authUser->id,
+            'name' => $authUser->name,
+            'email' => $authUser->email,
+            'avatar' => $authUser->avatar ? asset('storage/' . $authUser->avatar) : null,
+        ];
+
         return \Inertia\Inertia::render('Chats/Index', [
             'auth' => [
-                'user' => auth()->user(),
+                'user' => $authPayload,
             ],
             'initialConversations' => $conversations,
         ]);
@@ -113,6 +125,7 @@ class ConversationController extends Controller
                         'id' => $otherUser->id,
                         'name' => $otherUser->name,
                         'email' => $otherUser->email,
+                        'avatar' => $otherUser->avatar ? asset('storage/' . $otherUser->avatar) : null,
                         'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                     ],
                     'last_message' => $lastMessage ? [
@@ -190,6 +203,7 @@ class ConversationController extends Controller
                     'id' => $otherUser->id,
                     'name' => $otherUser->name,
                     'email' => $otherUser->email,
+                    'avatar' => $otherUser->avatar ? asset('storage/' . $otherUser->avatar) : null,
                 ],
             ],
             'messages' => $messages,
@@ -271,8 +285,16 @@ class ConversationController extends Controller
     public function users()
     {
         $users = User::where('id', '!=', auth()->id())
-            ->select('id', 'name', 'email')
-            ->get();
+            ->select('id', 'name', 'email', 'avatar')
+            ->get()
+            ->map(function ($u) {
+                return [
+                    'id' => $u->id,
+                    'name' => $u->name,
+                    'email' => $u->email,
+                    'avatar' => $u->avatar ? asset('storage/' . $u->avatar) : null,
+                ];
+            });
 
         return response()->json($users);
     }
@@ -344,6 +366,7 @@ class ConversationController extends Controller
                         'id' => $otherUser->id,
                         'name' => $otherUser->name,
                         'email' => $otherUser->email,
+                        'avatar' => $otherUser->avatar ? asset('storage/' . $otherUser->avatar) : null,
                         'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                     ],
                     'last_message' => $lastMessage ? [
@@ -454,6 +477,7 @@ class ConversationController extends Controller
                     'id' => $receiver->id,
                     'name' => $receiver->name,
                     'email' => $receiver->email,
+                    'avatar' => $receiver->avatar ? asset('storage/' . $receiver->avatar) : null,
                     'last_active_at' => $receiver->last_seen_at ?? $receiver->updated_at,
                 ],
             ];
@@ -498,6 +522,8 @@ class ConversationController extends Controller
                         'id' => $otherUser->id,
                         'name' => $otherUser->name,
                         'email' => $otherUser->email,
+                        'avatar' => $otherUser->avatar ? asset('storage/' . $otherUser->avatar) : null,
+                        'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                     ],
                     'last_message' => $lastMessage ? [
                         'id' => $lastMessage->id,
@@ -513,9 +539,17 @@ class ConversationController extends Controller
             ->sortByDesc('updated_at')
             ->values();
 
+        $authUser = auth()->user();
+        $authPayload = [
+            'id' => $authUser->id,
+            'name' => $authUser->name,
+            'email' => $authUser->email,
+            'avatar' => $authUser->avatar ? asset('storage/' . $authUser->avatar) : null,
+        ];
+
         return \Inertia\Inertia::render('Chats/Index', [
             'auth' => [
-                'user' => auth()->user(),
+                'user' => $authPayload,
             ],
             'receiver_id' => (int) $receiverId,
             // Provide receiver details so the client can open a new chat immediately
@@ -523,6 +557,7 @@ class ConversationController extends Controller
                 'id' => $receiver->id,
                 'name' => $receiver->name,
                 'email' => $receiver->email,
+                'avatar' => $receiver->avatar ? asset('storage/' . $receiver->avatar) : null,
             ] : null,
             'initialConversation' => $initialConversation,
             'initialMessages' => $messages,
