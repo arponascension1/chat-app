@@ -170,14 +170,7 @@ class MessageController extends Controller
             
             if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
                 // If the message had an attachment, delete it from storage before removing the record
-                try {
-                    if ($message->attachment_path) {
-                        Storage::disk('public')->delete($message->attachment_path);
-                    }
-                } catch (\Exception $e) {
-                    \Log::warning('Failed to delete attachment during deleteForMe', ['message_id' => $message->id, 'error' => $e->getMessage()]);
-                }
-
+                $this->deleteMessageAttachment($message);
                 $message->delete();
             }
         }
@@ -210,11 +203,7 @@ class MessageController extends Controller
 
         // If the message had an attachment, delete the file from storage and clear attachment fields
         if ($message->attachment_path) {
-            try {
-                Storage::disk('public')->delete($message->attachment_path);
-            } catch (\Exception $e) {
-                \Log::warning('Failed to delete attachment during unsend', ['message_id' => $message->id, 'error' => $e->getMessage()]);
-            }
+            $this->deleteMessageAttachment($message);
 
             // Clear attachment fields so clients don't try to load the file
             $message->update([
@@ -294,18 +283,17 @@ class MessageController extends Controller
                 // If both users have deleted this message, permanently delete it
                 if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
                     // Delete attachment file if present before permanently deleting message
-                    try {
-                        if ($message->attachment_path) {
-                            Storage::disk('public')->delete($message->attachment_path);
-                        }
-                    } catch (\Exception $e) {
-                        \Log::warning('Failed to delete attachment during deleteConversation', ['message_id' => $message->id, 'error' => $e->getMessage()]);
-                    }
-
+                    $this->deleteMessageAttachment($message);
                     $message->delete();
                 }
             }
         });
+
+        // After deleting all messages, try to delete the conversation's attachment folder
+        $conversationAttachmentDir = 'attachments/' . $conversation->id;
+        if (Storage::disk('public')->exists($conversationAttachmentDir)) {
+            Storage::disk('public')->deleteDirectory($conversationAttachmentDir);
+        }
 
         // Broadcast conversation deletion to current user
         broadcast(new \App\Events\ConversationDeleted($conversation->id, auth()->id()));
@@ -314,5 +302,34 @@ class MessageController extends Controller
             'success' => true,
             'conversation_id' => $conversation->id
         ]);
+    }
+
+    /**
+     * Helper method to delete message attachment file and folder from storage
+     */
+    private function deleteMessageAttachment(Message $message): void
+    {
+        if (!$message->attachment_path) {
+            return;
+        }
+
+        try {
+            // Delete the attachment file
+            if (Storage::disk('public')->exists($message->attachment_path)) {
+                Storage::disk('public')->delete($message->attachment_path);
+            }
+
+            // Delete the conversation's attachment directory if it exists
+            $directory = dirname($message->attachment_path);
+            if (Storage::disk('public')->exists($directory)) {
+                Storage::disk('public')->deleteDirectory($directory);
+            }
+        } catch (\Exception $e) {
+            \Log::warning('Failed to delete attachment', [
+                'message_id' => $message->id,
+                'attachment_path' => $message->attachment_path,
+                'error' => $e->getMessage()
+            ]);
+        }
     }
 }
