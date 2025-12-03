@@ -1520,13 +1520,17 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                         </svg>
                                     </button>
                                     <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center flex-shrink-0">
-                                        {(selectedConversation?.other_user?.avatar || newChatReceiver?.avatar) ? (
-                                            <img src={getUserAvatarUrl(selectedConversation?.other_user || newChatReceiver)!} alt={selectedConversation?.other_user.name || newChatReceiver?.name} className="w-full h-full rounded-full object-cover" />
-                                        ) : (
-                                            <span className="text-white font-bold text-sm">
-                                                {(selectedConversation?.other_user.name || newChatReceiver?.name || '').charAt(0).toUpperCase()}
-                                            </span>
-                                        )}
+                                        {(() => {
+                                            const user = selectedConversation?.other_user || newChatReceiver;
+                                            const avatarUrl = user ? getUserAvatarUrl(user) : null;
+                                            return avatarUrl ? (
+                                                <img src={avatarUrl} alt={user?.name} className="w-full h-full rounded-full object-cover" />
+                                            ) : (
+                                                <span className="text-white font-bold text-sm">
+                                                    {(user?.name || '').charAt(0).toUpperCase()}
+                                                </span>
+                                            );
+                                        })()}
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <h3 className="font-semibold text-gray-900 truncate">
