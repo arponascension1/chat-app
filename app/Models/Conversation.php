@@ -75,6 +75,48 @@ class Conversation extends Model
     }
 
     /**
+     * Get the last activity (message or call) for display in conversation list
+     */
+    public function getLastActivityFor(int $userId)
+    {
+        $lastMessage = $this->getLastMessageFor($userId);
+        $lastCall = CallHistory::where('conversation_id', $this->id)
+            ->where(function ($query) use ($userId) {
+                $query->whereJsonDoesntContain('deleted_by', $userId)
+                    ->orWhereNull('deleted_by');
+            })
+            ->latest()
+            ->first();
+
+        // Compare timestamps and return the most recent
+        if (! $lastMessage && ! $lastCall) {
+            return null;
+        }
+
+        if (! $lastMessage) {
+            return $lastCall;
+        }
+
+        if (! $lastCall) {
+            return $lastMessage;
+        }
+
+        return $lastMessage->created_at > $lastCall->created_at ? $lastMessage : $lastCall;
+    }
+
+    /**
+     * Get unseen call count for a user (missed, rejected, and cancelled calls not seen by receiver)
+     */
+    public function getUnseenCallCountFor(int $userId): int
+    {
+        return CallHistory::where('conversation_id', $this->id)
+            ->where('receiver_id', $userId)
+            ->whereIn('status', ['missed', 'rejected', 'cancelled'])
+            ->where('is_seen', false)
+            ->count();
+    }
+
+    /**
      * Find or create conversation between two users
      */
     public static function findOrCreateBetween(int $userId1, int $userId2): self

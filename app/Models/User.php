@@ -65,4 +65,40 @@ class User extends Authenticatable
     {
         return $this->hasMany(Message::class, 'user_id');
     }
+
+    /**
+     * Users that this user has blocked
+     */
+    public function blockedUsers()
+    {
+        return $this->hasMany(Block::class, 'blocker_id');
+    }
+
+    /**
+     * Users who have blocked this user
+     */
+    public function blockedByUsers()
+    {
+        return $this->hasMany(Block::class, 'blocked_id');
+    }
+
+    /**
+     * Check if this user has blocked another user
+     */
+    public function hasBlocked(int $userId): bool
+    {
+        return Block::where('blocker_id', $this->id)
+            ->where('blocked_id', $userId)
+            ->exists();
+    }
+
+    /**
+     * Check if this user is blocked by another user
+     */
+    public function isBlockedBy(int $userId): bool
+    {
+        return Block::where('blocker_id', $userId)
+            ->where('blocked_id', $this->id)
+            ->exists();
+    }
 }

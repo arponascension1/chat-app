@@ -16,9 +16,9 @@ class UpdateUserLastSeen
         try {
             $user = $request->user();
             if ($user) {
-                // Only update if more than 30 seconds passed to reduce write load
+                // Only update if more than 20 seconds passed to reduce write load
                 $last = $user->last_seen_at ? strtotime($user->last_seen_at) : 0;
-                if (time() - $last > 30) {
+                if (time() - $last > 20) {
                     $user->last_seen_at = now();
                     $user->save();
                 }

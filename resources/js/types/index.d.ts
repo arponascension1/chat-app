@@ -19,3 +19,10 @@ export interface User {
     updated_at: string;
     [key: string]: unknown; // This allows for additional properties...
 }
+
+// Extend Window interface for Echo
+declare global {
+    interface Window {
+        Echo: any;
+    }
+}

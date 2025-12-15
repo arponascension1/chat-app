@@ -3,6 +3,8 @@
 use App\Http\Controllers\Auth\GoogleAuthController;
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RegisterController;
+use App\Http\Controllers\BlockController;
+use App\Http\Controllers\CallController;
 use App\Http\Controllers\ConversationController;
 use App\Http\Controllers\MessageController;
 use App\Http\Controllers\UserController;
@@ -54,6 +56,20 @@ Route::middleware('auth')->group(function () {
     Route::delete('/messages/{message}/delete-for-me', [MessageController::class, 'deleteForMe']);
     Route::delete('/messages/{message}/unsend', [MessageController::class, 'unsend']);
     Route::delete('/conversations/{conversation}/delete', [MessageController::class, 'deleteConversation']);
+
+    // Audio call routes
+    Route::post('/calls/initiate', [CallController::class, 'initiate']);
+    Route::post('/calls/answer', [CallController::class, 'answer']);
+    Route::post('/calls/reject', [CallController::class, 'reject']);
+    Route::post('/calls/end', [CallController::class, 'end']);
+    Route::post('/calls/missed', [CallController::class, 'missed']);
+    Route::post('/calls/ice-candidate', [CallController::class, 'shareCandidate']);
+    Route::post('/conversations/{conversation}/calls/mark-seen', [CallController::class, 'markCallsAsSeen']);
+
+    // Block routes
+    Route::post('/users/block', [BlockController::class, 'block']);
+    Route::post('/users/unblock', [BlockController::class, 'unblock']);
+    Route::get('/blocked-users', [BlockController::class, 'blockedUsers']);
 
     // Direct chat route with receiver_id
     Route::get('/{receiver_id}', [ConversationController::class, 'chatWithUser'])->where('receiver_id', '[0-9]+');

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Events\MessageSent;
+use App\Models\CallHistory;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\User;
@@ -19,11 +20,19 @@ class MessageController extends Controller
         $validated = $request->validate([
             'receiver_id' => ['required', 'exists:users,id'],
             'content' => ['nullable', 'string', 'max:10000'],
-            'attachment' => ['nullable', 'file', 'mimes:jpg,jpeg,png,gif,mp4,mov,avi,webm', 'max:51200'], // 50MB max
+            'attachment' => ['nullable', 'file', 'mimes:jpg,jpeg,png,gif,mp4,mov,avi,webm,mp3,wav,ogg,m4a,webm', 'max:51200'], // 50MB max
         ]);
 
         $senderId = auth()->id();
         $receiverId = $validated['receiver_id'];
+
+        // Check if blocked or blocked by receiver
+        $isBlocked = auth()->user()->hasBlocked($receiverId);
+        $isBlockedBy = auth()->user()->isBlockedBy($receiverId);
+
+        if ($isBlocked || $isBlockedBy) {
+            return response()->json(['error' => 'Cannot send message to this user'], 403);
+        }
 
         // Find or create conversation
         $conversation = Conversation::findOrCreateBetween($senderId, $receiverId);
@@ -36,16 +45,18 @@ class MessageController extends Controller
         if ($request->hasFile('attachment')) {
             $file = $request->file('attachment');
             $mimeType = $file->getMimeType();
-            
+
             // Determine attachment type
             if (str_starts_with($mimeType, 'image/')) {
                 $attachmentType = 'image';
             } elseif (str_starts_with($mimeType, 'video/')) {
                 $attachmentType = 'video';
+            } elseif (str_starts_with($mimeType, 'audio/')) {
+                $attachmentType = 'voice';
             }
 
             // Store file in public disk
-            $attachmentPath = $file->store('attachments/' . $conversation->id, 'public');
+            $attachmentPath = $file->store('attachments/'.$conversation->id, 'public');
             $attachmentMimeType = $mimeType;
         }
 
@@ -70,7 +81,7 @@ class MessageController extends Controller
             broadcast(new MessageSent($message))->toOthers();
         } catch (\Exception $e) {
             \Log::warning('Broadcasting failed but message was saved', [
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
         }
 
@@ -81,7 +92,7 @@ class MessageController extends Controller
                 'created_at' => $message->created_at,
                 'attachment_path' => $message->attachment_path,
                 'attachment_type' => $message->attachment_type,
-                'attachment_url' => $message->attachment_path ? asset('storage/' . $message->attachment_path) : null,
+                'attachment_url' => $message->attachment_path ? asset('storage/'.$message->attachment_path) : null,
             ],
             'conversation' => $conversation,
         ]);
@@ -95,7 +106,7 @@ class MessageController extends Controller
         // Only mark as seen if the current user is the receiver (not the sender)
         if ($message->user_id !== auth()->id()) {
             $message->markAsSeen();
-            
+
             // Broadcast to sender that message was seen
             broadcast(new \App\Events\MessageSeen($message));
         }
@@ -109,24 +120,24 @@ class MessageController extends Controller
     public function deleteForMe(Message $message)
     {
         $deletedBy = $message->deleted_by ?? [];
-        
-        if (!in_array(auth()->id(), $deletedBy)) {
+
+        if (! in_array(auth()->id(), $deletedBy)) {
             // Get the conversation and the current last visible message BEFORE deleting
             $conversation = $message->conversation;
             $oldLastMessage = $conversation->getLastMessageFor(auth()->id());
-            
+
             // Mark message as deleted for current user
             $deletedBy[] = auth()->id();
             $message->update(['deleted_by' => $deletedBy]);
-            
+
             // Check if the deleted message was the last visible message for this user
             $wasLastVisibleMessage = $oldLastMessage && $oldLastMessage->id === $message->id;
-            
+
             // If this was the last visible message, broadcast the update
             if ($wasLastVisibleMessage) {
                 $newLastMessage = $conversation->getLastMessageFor(auth()->id());
                 $formattedLastMessage = null;
-                
+
                 if ($newLastMessage) {
                     $lastMessageContent = '';
                     if ($newLastMessage->unsent) {
@@ -137,8 +148,10 @@ class MessageController extends Controller
                         $lastMessageContent = '📷 Image';
                     } elseif ($newLastMessage->attachment_type === 'video') {
                         $lastMessageContent = '🎥 Video';
+                    } elseif ($newLastMessage->attachment_type === 'voice') {
+                        $lastMessageContent = '🎤 Voice message';
                     }
-                    
+
                     $formattedLastMessage = [
                         'id' => $newLastMessage->id,
                         'content' => $lastMessageContent,
@@ -164,10 +177,10 @@ class MessageController extends Controller
                     $formattedLastMessage
                 ));
             }
-            
+
             // If both users have deleted the message, permanently delete it from database
             $bothUsers = [$conversation->user1_id, $conversation->user2_id];
-            
+
             if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
                 // If the message had an attachment, delete it from storage before removing the record
                 $this->deleteMessageAttachment($message);
@@ -191,10 +204,10 @@ class MessageController extends Controller
         // Load the conversation relationship
         $message->load('conversation');
         $conversation = $message->conversation;
-        
+
         // Check if this is the last message in the conversation
         $isLastMessage = $conversation->lastMessage?->id === $message->id;
-        
+
         // Mark message as unsent
         $message->update([
             'unsent' => true,
@@ -227,7 +240,7 @@ class MessageController extends Controller
             foreach ([$conversation->user1_id, $conversation->user2_id] as $userId) {
                 $lastMessage = $conversation->getLastMessageFor($userId);
                 $newLastMessage = null;
-                
+
                 if ($lastMessage) {
                     $lastMessageContent = '';
                     if ($lastMessage->unsent) {
@@ -238,8 +251,10 @@ class MessageController extends Controller
                         $lastMessageContent = '📷 Image';
                     } elseif ($lastMessage->attachment_type === 'video') {
                         $lastMessageContent = '🎥 Video';
+                    } elseif ($lastMessage->attachment_type === 'voice') {
+                        $lastMessageContent = '🎤 Voice message';
                     }
-                    
+
                     $newLastMessage = [
                         'id' => $lastMessage->id,
                         'content' => $lastMessageContent,
@@ -248,7 +263,7 @@ class MessageController extends Controller
                         'is_read' => $lastMessage->seen,
                     ];
                 }
-                
+
                 broadcast(new \App\Events\MessageDeleted(
                     $message->id,
                     $conversation->id,
@@ -272,14 +287,14 @@ class MessageController extends Controller
         }
 
         $bothUsers = [$conversation->user1_id, $conversation->user2_id];
-        
+
         // Mark all messages as deleted for this user and check if both deleted
         $conversation->messages()->each(function ($message) use ($bothUsers) {
             $deletedBy = $message->deleted_by ?? [];
-            if (!in_array(auth()->id(), $deletedBy)) {
+            if (! in_array(auth()->id(), $deletedBy)) {
                 $deletedBy[] = auth()->id();
                 $message->update(['deleted_by' => $deletedBy]);
-                
+
                 // If both users have deleted this message, permanently delete it
                 if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
                     // Delete attachment file if present before permanently deleting message
@@ -289,10 +304,34 @@ class MessageController extends Controller
             }
         });
 
-        // After deleting all messages, try to delete the conversation's attachment folder
-        $conversationAttachmentDir = 'attachments/' . $conversation->id;
-        if (Storage::disk('public')->exists($conversationAttachmentDir)) {
-            Storage::disk('public')->deleteDirectory($conversationAttachmentDir);
+        // Mark call history as deleted for this user and check if both deleted
+        CallHistory::where('conversation_id', $conversation->id)->each(function ($call) use ($bothUsers) {
+            $deletedBy = $call->deleted_by ?? [];
+            if (! in_array(auth()->id(), $deletedBy)) {
+                $deletedBy[] = auth()->id();
+                $call->update(['deleted_by' => $deletedBy]);
+
+                // If both users have deleted this call, permanently delete it
+                if (count(array_intersect($bothUsers, $deletedBy)) === 2) {
+                    $call->delete();
+                }
+            }
+        });
+
+        // Check if all messages and calls have been deleted by both users
+        $remainingMessages = $conversation->messages()->count();
+        $remainingCalls = CallHistory::where('conversation_id', $conversation->id)->count();
+
+        // If no messages or calls remain (both users deleted all), permanently delete conversation
+        if ($remainingMessages === 0 && $remainingCalls === 0) {
+            // After deleting all messages, try to delete the conversation's attachment folder
+            $conversationAttachmentDir = 'attachments/'.$conversation->id;
+            if (Storage::disk('public')->exists($conversationAttachmentDir)) {
+                Storage::disk('public')->deleteDirectory($conversationAttachmentDir);
+            }
+
+            // Delete the conversation itself (will cascade delete any remaining data)
+            $conversation->delete();
         }
 
         // Broadcast conversation deletion to current user
@@ -300,7 +339,7 @@ class MessageController extends Controller
 
         return response()->json([
             'success' => true,
-            'conversation_id' => $conversation->id
+            'conversation_id' => $conversation->id,
         ]);
     }
 
@@ -309,7 +348,7 @@ class MessageController extends Controller
      */
     private function deleteMessageAttachment(Message $message): void
     {
-        if (!$message->attachment_path) {
+        if (! $message->attachment_path) {
             return;
         }
 
@@ -328,7 +367,7 @@ class MessageController extends Controller
             \Log::warning('Failed to delete attachment', [
                 'message_id' => $message->id,
                 'attachment_path' => $message->attachment_path,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
         }
     }

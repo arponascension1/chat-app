@@ -12,6 +12,11 @@ import { Head, router, Link } from '@inertiajs/react';
 import axios from 'axios';
 import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
 import { getUserAvatarUrl } from '@/lib/utils';
+import { useAudioCall } from '@/hooks/useAudioCall';
+import { useVoiceRecorder } from '@/hooks/useVoiceRecorder';
+import { IncomingCallModal, ActiveCallModal, CallingModal } from '@/components/CallModals';
+import VoiceMessagePlayer from '@/components/VoiceMessagePlayer';
+import { Phone } from 'lucide-react';
 
 interface User {
     id: number;
@@ -45,10 +50,13 @@ interface Conversation {
     } | null;
     unread_count: number;
     updated_at: string;
+    is_blocked?: boolean;
+    is_blocked_by?: boolean;
 }
 
 interface Message {
-    id: number;
+    id: number | string;
+    type?: 'message' | 'call';
     content: string | null;
     sender: User;
     is_mine: boolean;
@@ -58,6 +66,12 @@ interface Message {
     attachment_type?: string | null;
     attachment_url?: string | null;
     unsent?: boolean;
+    // Call-specific fields
+    call_status?: 'initiated' | 'answered' | 'rejected' | 'missed' | 'cancelled' | 'ended';
+    call_type?: 'audio' | 'video';
+    duration?: number | null;
+    caller?: User;
+    receiver?: User;
 }
 
 export default function Chats({ auth, receiver_id, initialReceiver, initialConversation, initialMessages, initialConversations = [], hasMoreMessages: initialHasMore = false }: ChatsProps) {
@@ -109,6 +123,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [filePreview, setFilePreview] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const voiceRecorder = useVoiceRecorder();
     const [hasMoreMessages, setHasMoreMessages] = useState(initialHasMore);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [showScrollButton, setShowScrollButton] = useState(false);
@@ -116,10 +131,15 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const isSwitchingConversation = useRef(false);
     const isLoadingMoreMessages = useRef(false);
     const wasAtBottomRef = useRef(false);
-    const pendingScrollIdsRef = useRef<number[]>([]);
+    const pendingScrollIdsRef = useRef<(number | string)[]>([]);
     // If the page was hard-refreshed, we want to mark messages as seen on load
     const isHardRefreshRef = useRef(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+    const headerMenuRef = useRef<HTMLDivElement>(null);
+
+    // Audio call hook
+    const { callState, initiateCall, answerCall, rejectCall, endCall, remoteAudio } = useAudioCall(auth.user.id);
 
     // Detect hard reload early using useLayoutEffect so that other effects (like the messages effect)
     // see the correct value synchronously during mount.
@@ -137,11 +157,11 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             // ignore
         }
     }, []);
-    const [messageMenuOpen, setMessageMenuOpen] = useState<number | null>(null);
+    const [messageMenuOpen, setMessageMenuOpen] = useState<number | string | null>(null);
     // New message popup & pending seen tracking
     const [newMessageCount, setNewMessageCount] = useState(0);
     const [showNewMessagePopup, setShowNewMessagePopup] = useState(false);
-    const pendingSeenIdsRef = useRef<number[]>([]);
+    const pendingSeenIdsRef = useRef<(number | string)[]>([]);
     // Lightbox for viewing attachments
     const [lightboxOpen, setLightboxOpen] = useState(false);
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -196,30 +216,126 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         };
     }, []);
 
-    // Presence: subscribe to presence channel and maintain online users list
+    // Presence: subscribe to presence channel and maintain online users list with improved reliability
     useEffect(() => {
         if (!auth.user) return;
         const Echo = (window as any).Echo;
         if (!Echo || !Echo.join) return;
 
-        const channel = Echo.join('online')
-            .here((users: any[]) => {
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        let reconnectTimeout: NodeJS.Timeout;
+
+        const joinPresenceChannel = () => {
+            try {
+                const channel = Echo.join('online')
+                    .here((users: any[]) => {
+                        try {
+                            const ids = users.map((u: any) => u.id);
+                            setOnlineUserIds(ids);
+                            reconnectAttempts = 0; // Reset on successful connection
+                        } catch (e) {
+                            console.error('Error processing presence users:', e);
+                        }
+                    })
+                    .joining((user: any) => {
+                        try {
+                            setOnlineUserIds(prev => {
+                                const newSet = new Set([...prev, user.id]);
+                                return Array.from(newSet);
+                            });
+                        } catch (e) {
+                            console.error('Error adding user to presence:', e);
+                        }
+                    })
+                    .leaving((user: any) => {
+                        try {
+                            setOnlineUserIds(prev => prev.filter(id => id !== user.id));
+                        } catch (e) {
+                            console.error('Error removing user from presence:', e);
+                        }
+                    })
+                    .error((error: any) => {
+                        console.error('Presence channel error:', error);
+                        // Attempt to reconnect
+                        if (reconnectAttempts < maxReconnectAttempts) {
+                            reconnectAttempts++;
+                            reconnectTimeout = setTimeout(() => {
+                                console.log(`Attempting to reconnect to presence channel (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                                joinPresenceChannel();
+                            }, 2000 * reconnectAttempts); // Exponential backoff
+                        }
+                    });
+
+                return channel;
+            } catch (e) {
+                console.error('Error joining presence channel:', e);
+                return null;
+            }
+        };
+
+        const channel = joinPresenceChannel();
+
+        // Periodic refresh of online status every 30 seconds
+        const refreshInterval = setInterval(() => {
+            if (channel) {
+                // Force a refresh by listening to the channel
                 try {
-                    const ids = users.map(u => u.id);
-                    setOnlineUserIds(ids);
+                    // The presence channel will automatically sync
+                    channel.here((users: any[]) => {
+                        try {
+                            const ids = users.map((u: any) => u.id);
+                            setOnlineUserIds(ids);
+                        } catch (e) {}
+                    });
                 } catch (e) {}
-            })
-            .joining((user: any) => {
-                setOnlineUserIds(prev => Array.from(new Set([...prev, user.id])));
-            })
-            .leaving((user: any) => {
-                setOnlineUserIds(prev => prev.filter(id => id !== user.id));
-            });
+            }
+        }, 30000); // Refresh every 30 seconds
 
         return () => {
-            try { channel.unsubscribe(); } catch (e) {}
+            clearInterval(refreshInterval);
+            clearTimeout(reconnectTimeout);
+            try { 
+                if (channel) {
+                    channel.unsubscribe(); 
+                }
+            } catch (e) {
+                console.error('Error unsubscribing from presence:', e);
+            }
         };
     }, [auth.user]);
+
+    // Heartbeat to keep connection alive and update last_seen_at
+    useEffect(() => {
+        // Send a lightweight heartbeat request every 45 seconds
+        const heartbeatInterval = setInterval(async () => {
+            try {
+                // Make a simple request to keep the session alive and update last_seen_at
+                await axios.get('/conversations');
+            } catch (e) {
+                // Silently fail - don't disrupt the user experience
+            }
+        }, 45000); // 45 seconds
+
+        return () => clearInterval(heartbeatInterval);
+    }, []);
+
+    // Close header menu when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (headerMenuRef.current && !headerMenuRef.current.contains(event.target as Node)) {
+                setShowHeaderMenu(false);
+            }
+        };
+
+        if (showHeaderMenu) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [showHeaderMenu]);
 
     // Close lightbox on ESC
     useEffect(() => {
@@ -281,8 +397,13 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     };
 
     // Debug helper to POST message seen with tracing — keeps a single place to observe when /messages/{id}/seen is called
-    const debugPostSeen = async (id: number, origin = 'unknown') => {
+    const debugPostSeen = async (id: number | string, origin = 'unknown') => {
         // (debug logging removed)
+        
+        // Only mark regular messages as seen, not call messages
+        if (typeof id === 'string' && id.startsWith('call_')) {
+            return;
+        }
 
         try {
             await axios.post(`/messages/${id}/seen`);
@@ -324,9 +445,33 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             const response = await axios.get(`/conversations/${conversationId}`);
             const msgs = normalizeArray<Message>(response.data?.messages);
             
-            // Use provided preselectedConversation if available to avoid overwriting
-            // client state when conversations list differs (mobile timing issue)
-            setSelectedConversation(preselectedConversation ?? (conversations.find(c => c.id === conversationId) || null));
+            // Mark all unseen calls as seen when loading messages
+            try {
+                await axios.post(`/conversations/${conversationId}/calls/mark-seen`);
+                // Reload conversations to update unseen count in sidebar
+                loadConversations();
+            } catch (error) {
+                console.error('Error marking calls as seen:', error);
+            }
+            
+            // Use conversation data from response to get fresh block status
+            const conversationData = response.data?.conversation;
+            if (conversationData) {
+                // Merge with existing conversation data from list, prioritizing server response
+                const existingConv = conversations.find(c => c.id === conversationId);
+                setSelectedConversation({
+                    id: conversationData.id,
+                    other_user: conversationData.other_user,
+                    is_blocked: conversationData.is_blocked,
+                    is_blocked_by: conversationData.is_blocked_by,
+                    last_message: existingConv?.last_message || null,
+                    unread_count: existingConv?.unread_count || 0,
+                    updated_at: existingConv?.updated_at || new Date().toISOString(),
+                });
+            } else {
+                // Fallback to existing behavior
+                setSelectedConversation(preselectedConversation ?? (conversations.find(c => c.id === conversationId) || null));
+            }
             setHasMoreMessages(response.data?.has_more || false);
             
             // Update messages state
@@ -347,8 +492,8 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             });
 
             // Determine unseen messages from the loaded response
-            const unseenIds: number[] = (msgs || [])
-                .filter((m: any) => !m.is_mine && !m.is_read)
+            const unseenIds: (number | string)[] = (msgs || [])
+                .filter((m: any) => !m.is_mine && !m.is_read && m.type !== 'call')
                 .map((m: any) => m.id);
 
             // After scrolling attempts, decide behavior:
@@ -359,14 +504,14 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                 if (unseenIds.length > 0) {
                     if (isHardRefreshRef.current) {
                         try {
-                            await Promise.all(unseenIds.map((id: number) => debugPostSeen(id, 'hardRefresh')));
+                            await Promise.all(unseenIds.map((id) => debugPostSeen(id, 'hardRefresh')));
                         } catch (e) { /* ignore */ }
                         try { loadConversations(); } catch (e) { /* ignore */ }
                         isHardRefreshRef.current = false;
                     } else if (markOnOpen) {
                         // User opened the conversation manually — mark loaded unseen messages as seen
                         try {
-                            await Promise.all(unseenIds.map((id: number) => debugPostSeen(id, 'openConversation')));
+                            await Promise.all(unseenIds.map((id) => debugPostSeen(id, 'openConversation')));
                         } catch (e) { /* ignore */ }
                         try { loadConversations(); } catch (e) { /* ignore */ }
                     } else {
@@ -505,9 +650,9 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         if (file) {
             // Validate mime type on client to avoid server-side 422 and invalid previews
             const mime = file.type || '';
-            if (!(mime.startsWith('image/') || mime.startsWith('video/'))) {
+            if (!(mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/'))) {
                 // Not a supported media type - ignore and notify user
-                alert('Only images and videos are supported as attachments.');
+                alert('Only images, videos, and audio files are supported as attachments.');
                 if (fileInputRef.current) fileInputRef.current.value = '';
                 setSelectedFile(null);
                 setFilePreview(null);
@@ -516,7 +661,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
 
             setSelectedFile(file);
 
-            // Create preview for images and videos
+            // Create preview for images, videos, and audio
             const reader = new FileReader();
             reader.onload = (e) => {
                 setFilePreview(e.target?.result as string);
@@ -535,7 +680,12 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     };
 
     // Delete message for me
-    const handleDeleteForMe = async (messageId: number) => {
+    const handleDeleteForMe = async (messageId: number | string) => {
+        // Only allow deleting regular messages, not call history
+        if (typeof messageId === 'string' && messageId.startsWith('call_')) {
+            return;
+        }
+        
         try {
             await axios.delete(`/messages/${messageId}/delete-for-me`);
             setMessages(prev => prev.filter(msg => msg.id !== messageId));
@@ -546,7 +696,12 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     };
 
     // Unsend message (delete for everyone)
-    const handleUnsend = async (messageId: number) => {
+    const handleUnsend = async (messageId: number | string) => {
+        // Only allow unsending regular messages, not call history
+        if (typeof messageId === 'string' && messageId.startsWith('call_')) {
+            return;
+        }
+        
         try {
             await axios.delete(`/messages/${messageId}/unsend`);
             setMessages(prev => prev.map(msg =>
@@ -574,6 +729,52 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                 router.get('/');
             } catch (error) {
                 console.error('Error deleting conversation:', error);
+            }
+        }
+    };
+
+    // Block user
+    const handleBlockUser = async () => {
+        const user = selectedConversation?.other_user || newChatReceiver;
+        if (!user) return;
+
+        if (confirm(`Block ${user.name}? They won't be able to message or call you.`)) {
+            try {
+                await axios.post('/users/block', { user_id: user.id });
+                // Update conversation to reflect blocked status
+                if (selectedConversation) {
+                    setSelectedConversation({
+                        ...selectedConversation,
+                        is_blocked: true,
+                    });
+                }
+                alert(`${user.name} has been blocked.`);
+            } catch (error) {
+                console.error('Error blocking user:', error);
+                alert('Failed to block user.');
+            }
+        }
+    };
+
+    // Unblock user
+    const handleUnblockUser = async () => {
+        const user = selectedConversation?.other_user || newChatReceiver;
+        if (!user) return;
+
+        if (confirm(`Unblock ${user.name}?`)) {
+            try {
+                await axios.post('/users/unblock', { user_id: user.id });
+                // Update conversation to reflect unblocked status
+                if (selectedConversation) {
+                    setSelectedConversation({
+                        ...selectedConversation,
+                        is_blocked: false,
+                    });
+                }
+                alert(`${user.name} has been unblocked.`);
+            } catch (error) {
+                console.error('Error unblocking user:', error);
+                alert('Failed to unblock user.');
             }
         }
     };
@@ -664,6 +865,78 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             }
         } catch (error) {
             console.error('Error sending message:', error);
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    // Send voice message
+    const handleSendVoiceMessage = async () => {
+        if (!voiceRecorder.audioBlob || isSending) return;
+
+        // Determine receiver ID
+        let receiverId: number;
+        if (selectedConversation) {
+            receiverId = selectedConversation.other_user.id;
+        } else if (newChatReceiver) {
+            receiverId = newChatReceiver.id;
+        } else {
+            return;
+        }
+
+        setIsSending(true);
+        try {
+            const formData = new FormData();
+            formData.append('receiver_id', receiverId.toString());
+            formData.append('content', '');
+            formData.append('attachment', voiceRecorder.audioBlob, 'voice-message.webm');
+
+            const response = await axios.post('/messages', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+
+            // Add message to list
+            const newMessage: Message = {
+                id: response.data.message.id,
+                content: response.data.message.content,
+                sender: auth.user,
+                is_mine: true,
+                is_read: false,
+                created_at: response.data.message.created_at,
+                attachment_path: response.data.message.attachment_path,
+                attachment_type: response.data.message.attachment_type,
+                attachment_url: response.data.message.attachment_url,
+            };
+
+            setMessages(prev => [...prev, newMessage]);
+            
+            // Cancel recording and reset
+            voiceRecorder.cancelRecording();
+
+            // If this was a new chat, reload conversations and select it
+            if (newChatReceiver) {
+                const conversationsResponse = await axios.get('/conversations');
+                const updatedConversations = conversationsResponse.data;
+                setConversations(updatedConversations);
+
+                const newConversation = updatedConversations.find(
+                    (c: Conversation) => c.other_user.id === receiverId
+                );
+                if (newConversation) {
+                    setSelectedConversation(newConversation);
+                }
+                setNewChatReceiver(null);
+            } else {
+                // Refresh conversations to update last message
+                loadConversations();
+            }
+
+            // Scroll to bottom
+            scheduleScrollToBottom(true);
+        } catch (error) {
+            console.error('Error sending voice message:', error);
         } finally {
             setIsSending(false);
         }
@@ -857,11 +1130,11 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
 
             // If this was a hard refresh, mark any loaded unseen messages as seen immediately
             if (isHardRefreshRef.current) {
-                const unseenIds = (messages || []).filter((m: any) => !m.is_mine && !m.is_read).map((m: any) => m.id);
+                const unseenIds = (messages || []).filter((m: any) => !m.is_mine && !m.is_read && m.type !== 'call').map((m: any) => m.id);
                 if (unseenIds.length > 0) {
                     (async () => {
                         try {
-                            await Promise.all(unseenIds.map((id: number) => axios.post(`/messages/${id}/seen`).catch(() => {})));
+                            await Promise.all(unseenIds.map((id) => axios.post(`/messages/${id}/seen`).catch(() => {})));
                         } catch (e) {
                             // ignore
                         }
@@ -971,11 +1244,11 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     // mark any unseen messages as seen immediately so the UI/state matches.
     useEffect(() => {
         if (initialMessages && initialMessages.length > 0 && receiverIdFromUrl) {
-            const unseenIds = (initialMessages || []).filter((m: any) => !m.is_mine && !m.is_read).map((m: any) => m.id);
+            const unseenIds = (initialMessages || []).filter((m: any) => !m.is_mine && !m.is_read && m.type !== 'call').map((m: any) => m.id);
             if (unseenIds.length > 0) {
                 (async () => {
                     try {
-                        await Promise.all(unseenIds.map((id: number) => debugPostSeen(id, 'ssr_direct_open')));
+                        await Promise.all(unseenIds.map((id) => debugPostSeen(id, 'ssr_direct_open')));
                     } catch (e) {
                         // ignore
                     }
@@ -983,10 +1256,21 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                 })();
             }
 
+            // Mark all unseen calls as seen on initial load
+            if (initialConversation?.id) {
+                (async () => {
+                    try {
+                        await axios.post(`/conversations/${initialConversation.id}/calls/mark-seen`);
+                    } catch (e) {
+                        // ignore
+                    }
+                })();
+            }
+
             // Clear the receiverIdFromUrl so we don't re-run this repeatedly
             setReceiverIdFromUrl(undefined);
         }
-    }, [initialMessages, receiverIdFromUrl, loadConversations]);
+    }, [initialMessages, receiverIdFromUrl, loadConversations, initialConversation]);
 
     // Listen for new messages via WebSocket
     useEffect(() => {
@@ -1184,12 +1468,48 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
             }
         });
 
+        // Listen for call history updates (when calls are answered, rejected, or ended)
+        channel.listen('.call.history.updated', (event: any) => {
+            // Add is_mine property based on auth user
+            const callMessage: Message = {
+                ...event.callHistory,
+                is_mine: event.callHistory.caller.id === auth.user.id,
+            };
+
+            // Only add to messages if this conversation is currently open
+            if (selectedConversation && event.callHistory.conversation_id === selectedConversation.id) {
+                setMessages(prev => {
+                    const existingIndex = prev.findIndex(msg => msg.id === callMessage.id);
+                    if (existingIndex !== -1) {
+                        // Update existing call message
+                        const updated = [...prev];
+                        updated[existingIndex] = callMessage;
+                        return updated;
+                    } else {
+                        // Add new call message
+                        return [...prev, callMessage];
+                    }
+                });
+
+                // If this is an unseen call for the current user and conversation is open, mark it as seen
+                if (!event.callHistory.is_seen && event.callHistory.receiver.id === auth.user.id) {
+                    axios.post(`/conversations/${selectedConversation.id}/calls/mark-seen`)
+                        .then(() => loadConversations())
+                        .catch(err => console.error('Error marking call as seen:', err));
+                }
+            }
+
+            // Always refresh conversations list (call might affect last message)
+            loadConversations();
+        });
+
         return () => {
             channel.stopListening('.message.sent');
             channel.stopListening('.message.seen');
             channel.stopListening('.message.unsent');
             channel.stopListening('.message.deleted');
             channel.stopListening('.conversation.deleted');
+            channel.stopListening('.call.history.updated');
         };
     }, [auth.user, selectedConversation, newChatReceiver, loadConversations, playNotificationSound]);
 
@@ -1381,7 +1701,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             {Array.isArray(filteredConversations) ? filteredConversations.map((conv) => (
                                     <div
                                         key={conv.id}
-                                        onClick={() => {
+                                        onClick={async () => {
                                             // Update URL without full page reload
                                             window.history.pushState({}, '', `/${conv.other_user.id}`);
 
@@ -1391,6 +1711,15 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                                     c.id === conv.id ? { ...c, unread_count: 0 } : c
                                                 )
                                             );
+
+                                            // Mark all unseen calls as seen
+                                            try {
+                                                await axios.post(`/conversations/${conv.id}/calls/mark-seen`);
+                                                // Reload conversations to update unseen count
+                                                loadConversations();
+                                            } catch (error) {
+                                                console.error('Error marking calls as seen:', error);
+                                            }
 
                                             // User explicitly clicked this conversation — mark loaded unseen messages as seen.
                                                                         // Set selected conversation immediately to avoid a blank center while messages load
@@ -1413,9 +1742,17 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                                     {conv.other_user.name.charAt(0).toUpperCase()}
                                                 </span>
                                             )}
-                                            {onlineUserIds.includes(conv.other_user.id) && (
-                                                <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25D366] border-2 border-white" />
-                                            )}
+                                            {(() => {
+                                                // Show online indicator if user is in presence channel OR recently active
+                                                const inPresenceChannel = onlineUserIds.includes(conv.other_user.id);
+                                                const lastActiveTimestamp = conv.other_user.last_active_at ? new Date(conv.other_user.last_active_at).getTime() : 0;
+                                                const twoMinutesAgo = Date.now() - (2 * 60 * 1000);
+                                                const isRecentlyActive = lastActiveTimestamp > twoMinutesAgo;
+                                                
+                                                return (inPresenceChannel || (isRecentlyActive && lastActiveTimestamp > 0)) ? (
+                                                    <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#25D366] border-2 border-white" />
+                                                ) : null;
+                                            })()}
                                         </div>
                                         <div className="ml-3 flex-1 min-w-0">
                                             <div className="flex justify-between items-baseline">
@@ -1538,36 +1875,124 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                         </h3>
                                         <p className="text-xs text-gray-500 truncate">
                                             {(() => {
-                                                const isOnline = ((selectedConversation && onlineUserIds.includes(selectedConversation.other_user.id)) || (newChatReceiver && onlineUserIds.includes(newChatReceiver.id)));
-                                                if (isOnline) return 'online';
-                                                const lastActive = selectedConversation?.other_user.last_active_at ?? newChatReceiver?.last_active_at;
+                                                const user = selectedConversation?.other_user || newChatReceiver;
+                                                if (!user) return 'offline';
+                                                
+                                                // Check if user is in presence channel
+                                                const inPresenceChannel = onlineUserIds.includes(user.id);
+                                                
+                                                // Check if user was active recently (within 2 minutes for better responsiveness)
+                                                const lastActiveTimestamp = user.last_active_at ? new Date(user.last_active_at).getTime() : 0;
+                                                const twoMinutesAgo = Date.now() - (2 * 60 * 1000);
+                                                const isRecentlyActive = lastActiveTimestamp > twoMinutesAgo;
+                                                
+                                                // User is online if in presence channel OR recently active
+                                                // Using OR instead of AND for better reliability
+                                                if (inPresenceChannel || (isRecentlyActive && lastActiveTimestamp > 0)) return 'online';
+                                                
+                                                // Otherwise show last activity or offline
+                                                const lastActive = user.last_active_at;
                                                 return lastActive ? activeAgo(lastActive).replace('Active ', '') : 'offline';
                                             })()}
                                         </p>
                                     </div>
                                 </div>
                                 <div className="flex items-center space-x-1">
-                                    <button className="p-2 hover:bg-gray-200 rounded-full transition-colors" title="Search">
-                                        <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                        </svg>
-                                    </button>
-                                    {selectedConversation && (
+                                    {/* Only show call button if not blocked */}
+                                    {!selectedConversation?.is_blocked && !selectedConversation?.is_blocked_by && (
                                         <button
-                                            onClick={handleDeleteConversation}
+                                            onClick={() => {
+                                                const receiverId = selectedConversation?.other_user.id || newChatReceiver?.id;
+                                                if (receiverId) {
+                                                    initiateCall(receiverId);
+                                                }
+                                            }}
                                             className="p-2 hover:bg-gray-200 rounded-full transition-colors"
-                                            title="Delete conversation"
+                                            title="Audio call"
                                         >
-                                            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                            </svg>
+                                            <Phone className="w-5 h-5 text-gray-600" />
                                         </button>
                                     )}
-                                    <button className="p-2 hover:bg-gray-200 rounded-full transition-colors" title="More options">
-                                        <svg className="w-5 h-5 text-gray-600" fill="currentColor" viewBox="0 0 20 20">
-                                            <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
-                                        </svg>
-                                    </button>
+                                    
+                                    {/* Three-dot menu dropdown */}
+                                    <div className="relative" ref={headerMenuRef}>
+                                        <button 
+                                            onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+                                            className="p-2 hover:bg-gray-200 rounded-full transition-colors" 
+                                            title="More options"
+                                        >
+                                            <svg className="w-5 h-5 text-gray-600" fill="currentColor" viewBox="0 0 20 20">
+                                                <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                                            </svg>
+                                        </button>
+
+                                        {/* Dropdown Menu */}
+                                        {showHeaderMenu && (
+                                            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-1 z-50 border border-gray-200">
+                                                {/* Search option */}
+                                                <button
+                                                    onClick={() => {
+                                                        setShowHeaderMenu(false);
+                                                        // Add search functionality here if needed
+                                                    }}
+                                                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-3"
+                                                >
+                                                    <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                                    </svg>
+                                                    <span>Search</span>
+                                                </button>
+
+                                                {/* Block/Unblock option */}
+                                                {selectedConversation?.is_blocked ? (
+                                                    <button
+                                                        onClick={() => {
+                                                            setShowHeaderMenu(false);
+                                                            handleUnblockUser();
+                                                        }}
+                                                        className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-3"
+                                                    >
+                                                        <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                                                        </svg>
+                                                        <span>Unblock User</span>
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => {
+                                                            setShowHeaderMenu(false);
+                                                            handleBlockUser();
+                                                        }}
+                                                        className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-3"
+                                                    >
+                                                        <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                                                        </svg>
+                                                        <span>Block User</span>
+                                                    </button>
+                                                )}
+
+                                                {/* Delete conversation option */}
+                                                {selectedConversation && (
+                                                    <>
+                                                        <div className="border-t border-gray-200 my-1"></div>
+                                                        <button
+                                                            onClick={() => {
+                                                                setShowHeaderMenu(false);
+                                                                handleDeleteConversation();
+                                                            }}
+                                                            className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center space-x-3"
+                                                        >
+                                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                            </svg>
+                                                            <span>Delete Conversation</span>
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
 
@@ -1608,7 +2033,77 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                     </div>
                                 )}
 
-                                {messages.map((msg) => (
+                                {messages.map((msg) => {
+                                    // Render call history messages
+                                    if (msg.type === 'call') {
+                                        const getCallIcon = () => {
+                                            if (msg.call_status === 'missed' && !msg.is_mine) {
+                                                return (
+                                                    <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
+                                                    </svg>
+                                                );
+                                            }
+                                            if (msg.call_status === 'rejected' || (msg.call_status === 'cancelled' && !msg.is_mine)) {
+                                                return (
+                                                    <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
+                                                    </svg>
+                                                );
+                                            }
+                                            return (
+                                                <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
+                                                </svg>
+                                            );
+                                        };
+
+                                        const getCallText = () => {
+                                            if (msg.call_status === 'missed' && !msg.is_mine) {
+                                                return 'Missed call';
+                                            }
+                                            if (msg.call_status === 'missed' && msg.is_mine) {
+                                                return 'Call not answered';
+                                            }
+                                            if (msg.call_status === 'cancelled' && !msg.is_mine) {
+                                                return 'Missed call';
+                                            }
+                                            if (msg.call_status === 'cancelled' && msg.is_mine) {
+                                                return 'Cancelled call';
+                                            }
+                                            if (msg.call_status === 'rejected' && !msg.is_mine) {
+                                                return 'Declined call';
+                                            }
+                                            if (msg.call_status === 'rejected' && msg.is_mine) {
+                                                return 'Call declined';
+                                            }
+                                            if (msg.call_status === 'ended' || msg.call_status === 'answered') {
+                                                const minutes = Math.floor((msg.duration || 0) / 60);
+                                                const seconds = (msg.duration || 0) % 60;
+                                                return msg.is_mine 
+                                                    ? `Outgoing call (${minutes}:${seconds.toString().padStart(2, '0')})`
+                                                    : `Incoming call (${minutes}:${seconds.toString().padStart(2, '0')})`;
+                                            }
+                                            return msg.is_mine ? 'Outgoing call' : 'Incoming call';
+                                        };
+
+                                        return (
+                                            <div key={msg.id} className="flex justify-center my-2">
+                                                <div className="flex items-center gap-2 bg-gray-100 rounded-full px-4 py-2">
+                                                    {getCallIcon()}
+                                                    <span className={`text-xs ${(msg.call_status === 'missed' || msg.call_status === 'rejected' || (msg.call_status === 'cancelled' && !msg.is_mine)) ? 'text-red-600' : 'text-gray-600'}`}>
+                                                        {getCallText()}
+                                                    </span>
+                                                    <span className="text-[10px] text-gray-400">
+                                                        {formatTime(msg.created_at)}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+
+                                    // Render regular messages
+                                    return (
                                     <div
                                         key={msg.id}
                                         className={`flex ${msg.is_mine ? 'justify-end' : 'justify-start'} group relative`}
@@ -1651,8 +2146,14 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             </div>
                                         </div>
                                         <div
-                                            className={`${msg.is_mine ? 'order-2' : 'order-1'} max-w-[65%] rounded-lg px-3 py-2 ${
-                                                msg.is_mine ? 'bg-[#D9FDD3]' : 'bg-white'
+                                            className={`${msg.is_mine ? 'order-2' : 'order-1'} max-w-[65%] rounded-lg ${
+                                                msg.attachment_url && msg.attachment_type === 'voice' 
+                                                    ? msg.is_mine ? 'bg-[#D9FDD3] px-2 py-1.5' : 'bg-[#0084FF] px-2 py-1.5'
+                                                    : 'px-3 py-2'
+                                            } ${
+                                                msg.attachment_url && msg.attachment_type === 'voice'
+                                                    ? ''
+                                                    : msg.is_mine ? 'bg-[#D9FDD3]' : 'bg-white'
                                             }`}
                                         >
                                             {/* Show unsent message indicator */}
@@ -1692,14 +2193,14 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                                             <video
                                                                 src={msg.attachment_url}
                                                                 controls
-                                                                // Fixed, consistent thumbnail sizes across breakpoints
                                                                 className="rounded-lg mb-2 w-48 h-32 md:w-64 md:h-40 lg:w-80 lg:h-48 object-cover cursor-pointer"
                                                                 onClick={() => openLightbox(msg.attachment_url!, 'video')}
                                                                 onLoadedMetadata={() => {
                                                                     const container = messagesContainerRef.current;
                                                                     const isAtBottom = container ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 100 : false;
-                                                                    // debug logging removed
+                                                                    // If this message was marked as pending for scroll, trigger scroll now.
                                                                     if (pendingScrollIdsRef.current.includes(msg.id)) {
+                                                                        // remove id
                                                                         pendingScrollIdsRef.current = pendingScrollIdsRef.current.filter(id => id !== msg.id);
                                                                         scheduleScrollToBottom();
                                                                         return;
@@ -1709,10 +2210,14 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                                                     }
                                                                 }}
                                                             />
-                                                            </div>
+                                                        </div>
                                                     )}
 
-                                                    {msg.content && <p className="text-sm text-gray-900 break-words">{msg.content}</p>}
+                                                    {msg.attachment_url && msg.attachment_type === 'voice' && (
+                                                        <VoiceMessagePlayer audioUrl={msg.attachment_url} isOwnMessage={msg.is_mine} />
+                                                    )}
+
+                                                    {msg.content && msg.attachment_type !== 'voice' && <p className="text-sm text-gray-900 break-words">{msg.content}</p>}
                                                 </>
                                             )}
                                             <div className="flex items-center justify-end space-x-1 mt-1">
@@ -1733,7 +2238,8 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             </div>
                                         </div>
                                     </div>
-                                ))}
+                                    );
+                                })}
                                 <div ref={messagesEndRef} />
                                 </div>
                                 
@@ -1751,8 +2257,22 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                 )}
                             </div>
 
-                            {/* Message Input */}
-                            <div className="bg-[#F0F2F5] px-4 py-3 relative">
+                            {/* Message Input or Blocked Message */}
+                            {(selectedConversation?.is_blocked || selectedConversation?.is_blocked_by) ? (
+                                <div className="bg-[#F0F2F5] px-4 py-4 text-center">
+                                    <div className="bg-white rounded-lg p-4 shadow-sm">
+                                        <svg className="w-12 h-12 text-gray-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                                        </svg>
+                                        <p className="text-gray-600 text-sm">
+                                            {selectedConversation?.is_blocked 
+                                                ? "You've blocked this user. Unblock to send messages." 
+                                                : "You can't message this user."}
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="bg-[#F0F2F5] px-4 py-3 relative">
                                 {/* Emoji Picker */}
                                 {showEmojiPicker && (
                                     <div className="absolute bottom-16 left-4 z-50">
@@ -1768,6 +2288,10 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                                 <img src={filePreview} alt="Preview" className="max-h-32 rounded object-contain" />
                                             ) : selectedFile?.type.startsWith('video/') ? (
                                                 <video src={filePreview} className="max-h-32 rounded" controls />
+                                            ) : selectedFile?.type.startsWith('audio/') ? (
+                                                <div className="p-2">
+                                                    <VoiceMessagePlayer audioUrl={filePreview} isOwnMessage={true} />
+                                                </div>
                                             ) : (
                                                 <div className="flex items-center space-x-2 p-2">
                                                     <div className="w-10 h-10 bg-gray-200 rounded flex items-center justify-center">
@@ -1803,7 +2327,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                     <input
                                         ref={fileInputRef}
                                         type="file"
-                                        accept="image/*,video/*"
+                                        accept="image/*,video/*,audio/*"
                                         // hint mobile devices to open camera/video capture when possible
                                         capture="environment"
                                         onChange={handleFileSelect}
@@ -1817,6 +2341,63 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                                         </svg>
                                     </button>
+
+                                    {/* Voice recording button with timer */}
+                                    {voiceRecorder.recordingState === 'recording' && (
+                                        <div className="flex items-center bg-white rounded-lg px-3 py-2 mr-2 shadow-sm">
+                                            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse mr-2"></div>
+                                            <span className="text-sm font-medium text-gray-700">
+                                                {Math.floor(voiceRecorder.recordingTime / 60000)}:{String(Math.floor((voiceRecorder.recordingTime % 60000) / 1000)).padStart(2, '0')}
+                                            </span>
+                                        </div>
+                                    )}
+                                    
+                                    <button
+                                        onClick={async () => {
+                                            if (voiceRecorder.recordingState === 'idle') {
+                                                await voiceRecorder.startRecording();
+                                            } else if (voiceRecorder.recordingState === 'recording') {
+                                                voiceRecorder.stopRecording();
+                                            } else if (voiceRecorder.recordingState === 'paused') {
+                                                voiceRecorder.resumeRecording();
+                                            }
+                                        }}
+                                        className={`p-2 hover:bg-gray-200 rounded-full transition mb-1 ${voiceRecorder.recordingState === 'recording' ? 'bg-red-100 hover:bg-red-200' : ''}`}
+                                        title={voiceRecorder.recordingState === 'recording' ? 'Stop recording' : 'Record voice message'}
+                                    >
+                                        {voiceRecorder.recordingState === 'recording' ? (
+                                            <svg className="w-6 h-6 text-red-500" viewBox="0 0 24 24" fill="currentColor">
+                                                <path d="M6 6h12v12H6z" />
+                                            </svg>
+                                        ) : (
+                                            <svg className="w-6 h-6 text-gray-600" viewBox="0 0 24 24" fill="currentColor">
+                                                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                                                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                                            </svg>
+                                        )}
+                                    </button>
+
+                                    {/* If a recording exists show preview + send/cancel */}
+                                    {voiceRecorder.audioUrl && (
+                                        <div className="flex items-center space-x-2 mr-2">
+                                            <div className="w-56">
+                                                <VoiceMessagePlayer audioUrl={voiceRecorder.audioUrl} isOwnMessage={true} />
+                                            </div>
+                                            <button
+                                                onClick={handleSendVoiceMessage}
+                                                disabled={isSending}
+                                                className="p-2 bg-[#25D366] hover:bg-[#20BD5A] rounded-full transition mb-1 text-white"
+                                            >
+                                                Send
+                                            </button>
+                                            <button
+                                                onClick={() => voiceRecorder.cancelRecording()}
+                                                className="p-2 bg-gray-200 hover:bg-gray-300 rounded-full transition mb-1"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    )}
 
                                     <div className="flex-1 bg-white rounded-lg">
                                     <textarea
@@ -1846,6 +2427,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                 </button>
                                 </div>
                             </div>
+                            )}
                         </>
                     ) : (
                         <>
@@ -1917,6 +2499,33 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                     </div>
                 </div>
             )}
+
+            {/* Audio Call Modals */}
+            {callState.isReceivingCall && callState.callerName && callState.callerId && (
+                <IncomingCallModal
+                    callerName={callState.callerName}
+                    onAnswer={() => answerCall(callState.callerId!)}
+                    onReject={() => rejectCall(callState.callerId!)}
+                />
+            )}
+
+            {callState.isCalling && (
+                <CallingModal
+                    receiverName={selectedConversation?.other_user.name || newChatReceiver?.name || 'Unknown'}
+                    onCancel={endCall}
+                />
+            )}
+
+            {callState.isInCall && (
+                <ActiveCallModal
+                    receiverName={selectedConversation?.other_user.name || newChatReceiver?.name || 'Unknown'}
+                    isConnected={true}
+                    onEndCall={endCall}
+                />
+            )}
+
+            {/* Hidden audio element for remote stream */}
+            <audio ref={remoteAudio} autoPlay />
 
         </>
     );
