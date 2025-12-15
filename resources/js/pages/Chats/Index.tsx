@@ -137,6 +137,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [showHeaderMenu, setShowHeaderMenu] = useState(false);
     const headerMenuRef = useRef<HTMLDivElement>(null);
+    const emojiPickerRef = useRef<HTMLDivElement>(null);
 
     // Audio call hook
     const { callState, initiateCall, answerCall, rejectCall, endCall, remoteAudio } = useAudioCall(auth.user.id);
@@ -337,6 +338,23 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         };
     }, [showHeaderMenu]);
 
+    // Close emoji picker when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target as Node)) {
+                setShowEmojiPicker(false);
+            }
+        };
+
+        if (showEmojiPicker) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [showEmojiPicker]);
+
     // Close lightbox on ESC
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -454,12 +472,12 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                 console.error('Error marking calls as seen:', error);
             }
             
-            // Use conversation data from response to get fresh block status
+            // Use conversation data from response to get fresh block status and last_active_at
             const conversationData = response.data?.conversation;
             if (conversationData) {
                 // Merge with existing conversation data from list, prioritizing server response
                 const existingConv = conversations.find(c => c.id === conversationId);
-                setSelectedConversation({
+                const updatedConversation = {
                     id: conversationData.id,
                     other_user: conversationData.other_user,
                     is_blocked: conversationData.is_blocked,
@@ -467,7 +485,17 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                     last_message: existingConv?.last_message || null,
                     unread_count: existingConv?.unread_count || 0,
                     updated_at: existingConv?.updated_at || new Date().toISOString(),
-                });
+                };
+                setSelectedConversation(updatedConversation);
+                
+                // Also update the conversation in the sidebar list with fresh last_active_at
+                setConversations(prevConvs => 
+                    prevConvs.map(conv => 
+                        conv.id === conversationId 
+                            ? { ...conv, other_user: { ...conv.other_user, last_active_at: conversationData.other_user.last_active_at } }
+                            : conv
+                    )
+                );
             } else {
                 // Fallback to existing behavior
                 setSelectedConversation(preselectedConversation ?? (conversations.find(c => c.id === conversationId) || null));
@@ -638,10 +666,10 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
         return () => clearTimeout(timeoutId);
     }, [searchQuery, performSearch]);
 
-    // Handle emoji selection
+    // Handle emoji selection - doesn't close picker to allow multiple selections
     const handleEmojiClick = (emojiData: EmojiClickData) => {
         setMessage(prev => prev + emojiData.emoji);
-        setShowEmojiPicker(false);
+        // Don't close the picker - let users select multiple emojis
     };
 
     // Handle file selection
@@ -2275,7 +2303,7 @@ export default function Chats({ auth, receiver_id, initialReceiver, initialConve
                                 <div className="bg-[#F0F2F5] px-4 py-3 relative">
                                 {/* Emoji Picker */}
                                 {showEmojiPicker && (
-                                    <div className="absolute bottom-16 left-4 z-50">
+                                    <div ref={emojiPickerRef} className="absolute bottom-16 left-4 z-50">
                                         <EmojiPicker onEmojiClick={handleEmojiClick} />
                                     </div>
                                 )}

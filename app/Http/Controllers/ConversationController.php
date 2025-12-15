@@ -163,6 +163,7 @@ class ConversationController extends Controller
                     'name' => $otherUser->name,
                     'email' => $otherUser->email,
                     'avatar' => $otherUser->avatar ? asset('storage/'.$otherUser->avatar) : null,
+                    'last_active_at' => $otherUser->last_seen_at ?? $otherUser->updated_at,
                 ],
                 'is_blocked' => $isBlocked,
                 'is_blocked_by' => $isBlockedBy,
